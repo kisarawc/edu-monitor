@@ -60,10 +60,15 @@ from .quiz_service import (
     update_quiz_questions,
     has_student_completed_quiz,
 )
+from .models import AIFeedback, QuizEditLog
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
+
+# Buffer to accumulate transcript text before storing in vector DB
+# Stores context-rich paragraphs (≥200 chars) instead of tiny fragments
+_transcript_buffer: list = []
 
 
 class TranscriptRequest(BaseModel):
@@ -108,6 +113,17 @@ class SaveOutcomesRequest(BaseModel):
     """Request body for saving teacher-approved learning outcomes."""
     outcomes: List[str]
     source_filename: str
+
+
+class FeedbackRequest(BaseModel):
+    """Request body for submitting AI feedback (Human-in-the-Loop evaluation)."""
+    feature: str             # "qa" | "summary"
+    rating: int              # 1 = positive, 0 = negative
+    comment: Optional[str] = None
+    student_id: Optional[str] = None
+    question: Optional[str] = None
+    response: Optional[str] = None
+    summary_type: Optional[str] = None
 
 
 @router.get("/health")
@@ -256,9 +272,10 @@ async def submit_transcript(request: TranscriptRequest):
 
 
 @router.get("/summary")
-async def get_summary():
+async def get_summary(type: str = "advanced"):
     """
     Generate a summary of all stored lecture content.
+    Accepts 'type' parameter ('quick' or 'advanced') to adjust detail level.
     Returns a streaming response as the LLM generates the summary.
     REQUIRES Ollama to be running.
     """
@@ -296,16 +313,33 @@ async def get_summary():
             media_type="text/event-stream"
         )
     
-    # Combine content for context (extracting the 'text' field from each dict)
-    context_chunks = [item.get("text", "") if isinstance(item, dict) else str(item) for item in all_content[:20]]
-    context = "\n\n---\n\n".join(context_chunks)  # Limit context size
+    # Combine content for context — label by source so LLM can distinguish
+    slide_chunks = []
+    transcript_chunks = []
+    for item in all_content[:30]:
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        source = item.get("source", "unknown") if isinstance(item, dict) else "unknown"
+        if not text.strip():
+            continue
+        if source == "slides":
+            slide_chunks.append(text)
+        else:
+            transcript_chunks.append(text)
+    
+    context_parts = []
+    if slide_chunks:
+        context_parts.append("=== FROM LECTURE SLIDES ===\n" + "\n\n".join(slide_chunks))
+    if transcript_chunks:
+        context_parts.append("=== FROM LIVE LECTURE SPEECH (what the teacher actually said) ===\n" + "\n\n".join(transcript_chunks))
+    
+    context = "\n\n".join(context_parts) if context_parts else ""
 
-    logger.info(f"Generating summary for {len(all_content)} content chunks")
+    logger.info(f"Generating summary: {len(slide_chunks)} slide chunks, {len(transcript_chunks)} transcript chunks")
     
     # Stream the summary
     def generate():
         try:
-            for chunk in generate_summary(context):
+            for chunk in generate_summary(context, summary_type=type):
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -363,9 +397,13 @@ async def ask_question(request: QuestionRequest):
             media_type="text/event-stream"
         )
     
-    # Build context from search results
-    context_parts = [doc for doc, dist, meta in search_results]
-    context = "\n\n---\n\n".join(context_parts)
+    # Build context from search results — label by source
+    labeled_parts = []
+    for doc, dist, meta in search_results:
+        source = meta.get("source", "unknown") if meta else "unknown"
+        label = "[From Slides]" if source == "slides" else "[From Live Lecture Speech]"
+        labeled_parts.append(f"{label}\n{doc}")
+    context = "\n\n---\n\n".join(labeled_parts)
     
     logger.info(f"Answering question with {len(search_results)} context chunks")
     
@@ -448,8 +486,9 @@ async def clear_content():
 async def transcribe_audio_chunk(file: UploadFile = File(...)):
     """
     Transcribe an audio chunk using local Faster Whisper.
-    Accepts audio file (WAV, WebM, etc.), transcribes it, stores in vector DB,
-    and returns the transcript text.
+    Accumulates transcript text and stores to vector DB once a meaningful
+    paragraph is built (≥200 chars). This ensures the Q&A system gets
+    context-rich chunks rather than tiny sentence fragments.
     """
     try:
         audio_bytes = await file.read()
@@ -479,25 +518,60 @@ async def transcribe_audio_chunk(file: UploadFile = File(...)):
                 data={"transcript": "", "chunks_stored": 0}
             )
 
-        # We intentionally DO NOT save the transcript to the vector DB here!
-        # The frontend handles saving it by calling the `/transcript` endpoint
-        # if the teacher has the "Auto-Save" toggle enabled.
+        # Accumulate transcript text — only store when we have enough context
+        _transcript_buffer.append(transcript)
+        accumulated = " ".join(_transcript_buffer)
+        chunks_stored = 0
 
-        logger.info(f"Transcribed successfully: {len(transcript)} chars (NOT automatically saved)")
+        if len(accumulated) >= 200:
+            # Enough context — store this accumulated segment in vector DB
+            num_stored = add_documents(
+                texts=[accumulated],
+                source="transcript",
+                metadata={"type": "live_speech", "method": "whisper_local", "raw": True}
+            )
+            chunks_stored = num_stored
+            logger.info(f"Stored accumulated transcript: {len(accumulated)} chars, {num_stored} chunks")
+            _transcript_buffer.clear()
+        else:
+            logger.info(f"Buffered transcript ({len(accumulated)} chars, waiting for ≥200)")
 
         return StatusResponse(
             success=True,
             message="Transcribed successfully",
             data={
                 "transcript": transcript,
-                "chunks_stored": 0,
+                "chunks_stored": chunks_stored,
                 "audio_size": len(audio_bytes),
+                "buffer_size": len(accumulated) if chunks_stored == 0 else 0,
             }
         )
 
     except Exception as e:
         logger.error(f"Audio transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+
+@router.post("/transcribe-audio/flush")
+async def flush_transcript_buffer():
+    """Flush any remaining buffered transcript text to the vector DB."""
+    accumulated = " ".join(_transcript_buffer)
+    if not accumulated.strip():
+        return StatusResponse(success=True, message="Buffer empty, nothing to flush")
+
+    num_stored = add_documents(
+        texts=[accumulated],
+        source="transcript",
+        metadata={"type": "live_speech", "method": "whisper_local", "raw": True}
+    )
+    logger.info(f"Flushed transcript buffer: {len(accumulated)} chars, {num_stored} chunks")
+    _transcript_buffer.clear()
+
+    return StatusResponse(
+        success=True,
+        message=f"Flushed and stored {num_stored} chunks",
+        data={"transcript": accumulated, "chunks_stored": num_stored}
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -599,7 +673,18 @@ async def regenerate_question_endpoint(request: Request, db: Session = Depends(g
         
         if not question_id:
             raise HTTPException(status_code=400, detail="question_id is required")
-            
+
+        # --- HITL: Log regeneration for evaluation tracking ---
+        from .models import QuizQuestion as QQ
+        q = db.query(QQ).filter(QQ.id == question_id).first()
+        if q:
+            log = QuizEditLog(quiz_id=q.quiz_id, question_id=question_id, action="regenerate", details="Teacher regenerated question via AI")
+            db.add(log)
+            try:
+                db.flush()
+            except Exception:
+                pass
+
         new_question = regenerate_quiz_question(question_id, db)
         return {"success": True, "question": new_question}
         
@@ -649,7 +734,18 @@ async def update_quiz_endpoint(quiz_id: str, request: Request, db: Session = Dep
     questions = data.get("questions", [])
     if not questions:
         raise HTTPException(status_code=400, detail="No questions provided to update")
-        
+
+    # --- HITL: Log edits for evaluation tracking ---
+    for q_data in questions:
+        q_id = q_data.get("id")
+        if q_id:
+            log = QuizEditLog(quiz_id=quiz_id, question_id=q_id, action="edit", details="Teacher edited question text/options")
+            db.add(log)
+    try:
+        db.flush()
+    except Exception:
+        pass  # Non-critical — don't fail the edit if logging fails
+
     updated_quiz = update_quiz_questions(quiz_id, questions, db)
     if not updated_quiz:
         raise HTTPException(status_code=404, detail="Quiz not found")
@@ -732,4 +828,180 @@ async def quiz_analytics(quiz_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# HUMAN-IN-THE-LOOP EVALUATION ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
 
+@router.post("/feedback")
+async def submit_feedback(request: FeedbackRequest, db: Session = Depends(get_db)):
+    """
+    Submit student feedback on an AI-generated response.
+    Used for Human-in-the-Loop evaluation of the AI system.
+    """
+    if request.feature not in ("qa", "summary"):
+        raise HTTPException(status_code=400, detail="feature must be 'qa' or 'summary'")
+    if request.rating not in (0, 1):
+        raise HTTPException(status_code=400, detail="rating must be 0 (negative) or 1 (positive)")
+
+    feedback = AIFeedback(
+        feature=request.feature,
+        rating=request.rating,
+        comment=request.comment,
+        student_id=request.student_id,
+        question=request.question,
+        response=request.response[:2000] if request.response else None,  # cap stored text
+        summary_type=request.summary_type,
+    )
+    db.add(feedback)
+    db.commit()
+
+    logger.info(f"HITL feedback: {request.feature} {'👍' if request.rating else '👎'} from {request.student_id}")
+    return {"success": True, "message": "Feedback recorded", "id": feedback.id}
+
+
+@router.get("/feedback/analytics")
+async def feedback_analytics(db: Session = Depends(get_db)):
+    """
+    Get aggregated Human-in-the-Loop evaluation analytics.
+    Returns satisfaction rates, feedback counts, quiz edit stats, and trend data.
+    """
+    from sqlalchemy import func
+
+    # --- Q&A feedback ---
+    qa_all = db.query(AIFeedback).filter(AIFeedback.feature == "qa").all()
+    qa_positive = sum(1 for f in qa_all if f.rating == 1)
+    qa_total = len(qa_all)
+    qa_with_comments = sum(1 for f in qa_all if f.comment)
+
+    # --- Summary feedback ---
+    summary_all = db.query(AIFeedback).filter(AIFeedback.feature == "summary").all()
+    summary_helpful = sum(1 for f in summary_all if f.rating == 1)
+    summary_total = len(summary_all)
+
+    # Summary breakdown by type
+    summary_by_type = {}
+    for f in summary_all:
+        st = f.summary_type or "unknown"
+        if st not in summary_by_type:
+            summary_by_type[st] = {"helpful": 0, "total": 0}
+        summary_by_type[st]["total"] += 1
+        if f.rating == 1:
+            summary_by_type[st]["helpful"] += 1
+
+    # --- Quiz edit logs ---
+    edit_logs = db.query(QuizEditLog).all()
+    edits = sum(1 for l in edit_logs if l.action == "edit")
+    regenerations = sum(1 for l in edit_logs if l.action == "regenerate")
+    deletions = sum(1 for l in edit_logs if l.action == "delete")
+
+    # Total questions ever generated (across all quizzes)
+    from .models import Quiz as QuizModel
+    total_quizzes = db.query(QuizModel).count()
+    total_questions_generated = db.query(func.sum(QuizModel.num_questions)).scalar() or 0
+    total_modifications = edits + regenerations + deletions
+    edit_rate = round(total_modifications / total_questions_generated * 100, 1) if total_questions_generated > 0 else 0
+
+    # --- Trend data (daily feedback counts for charts) ---
+    all_feedback = db.query(AIFeedback).order_by(AIFeedback.created_at.asc()).all()
+    daily_trend = {}
+    for f in all_feedback:
+        day = f.created_at.strftime("%Y-%m-%d") if f.created_at else "unknown"
+        if day not in daily_trend:
+            daily_trend[day] = {"date": day, "qa_positive": 0, "qa_negative": 0, "summary_positive": 0, "summary_negative": 0}
+        if f.feature == "qa":
+            daily_trend[day]["qa_positive" if f.rating == 1 else "qa_negative"] += 1
+        else:
+            daily_trend[day]["summary_positive" if f.rating == 1 else "summary_negative"] += 1
+
+    # --- Rating distribution for radar chart ---
+    # Per-feature satisfaction for visual comparison
+    features_summary = []
+    if qa_total > 0:
+        features_summary.append({"feature": "Q&A Answers", "satisfaction": round(qa_positive / qa_total * 100, 1), "total": qa_total})
+    if summary_total > 0:
+        features_summary.append({"feature": "Summaries", "satisfaction": round(summary_helpful / summary_total * 100, 1), "total": summary_total})
+    if total_questions_generated > 0:
+        acceptance_rate = round((total_questions_generated - total_modifications) / total_questions_generated * 100, 1)
+        features_summary.append({"feature": "Quiz Questions", "satisfaction": acceptance_rate, "total": int(total_questions_generated)})
+
+    date_range = {}
+    if all_feedback:
+        date_range = {
+            "first": all_feedback[0].created_at.strftime("%Y-%m-%d") if all_feedback[0].created_at else None,
+            "last": all_feedback[-1].created_at.strftime("%Y-%m-%d") if all_feedback[-1].created_at else None,
+        }
+
+    return {
+        "success": True,
+        "analytics": {
+            "qa": {
+                "total": qa_total,
+                "positive": qa_positive,
+                "negative": qa_total - qa_positive,
+                "satisfaction_rate": round(qa_positive / qa_total * 100, 1) if qa_total > 0 else 0,
+                "with_comments": qa_with_comments,
+            },
+            "summary": {
+                "total": summary_total,
+                "helpful": summary_helpful,
+                "not_helpful": summary_total - summary_helpful,
+                "helpfulness_rate": round(summary_helpful / summary_total * 100, 1) if summary_total > 0 else 0,
+                "by_type": summary_by_type,
+            },
+            "quiz_edits": {
+                "total_quizzes": total_quizzes,
+                "total_questions_generated": int(total_questions_generated),
+                "questions_edited": edits,
+                "questions_regenerated": regenerations,
+                "questions_deleted": deletions,
+                "total_modifications": total_modifications,
+                "edit_rate": edit_rate,
+                "acceptance_rate": round(100 - edit_rate, 1),
+            },
+            "total_feedback": qa_total + summary_total,
+            "daily_trend": list(daily_trend.values()),
+            "features_summary": features_summary,
+            "date_range": date_range,
+        }
+    }
+
+
+@router.get("/feedback/recent")
+async def recent_feedback(limit: int = 20, db: Session = Depends(get_db)):
+    """
+    Get recent feedback entries with full context for the admin evaluation log.
+    """
+    # Recent AI feedback
+    feedbacks = db.query(AIFeedback).order_by(AIFeedback.created_at.desc()).limit(limit).all()
+
+    # Recent quiz edit logs
+    edit_logs = db.query(QuizEditLog).order_by(QuizEditLog.created_at.desc()).limit(limit).all()
+
+    # Merge and sort by timestamp
+    entries = []
+    for f in feedbacks:
+        entries.append({
+            "type": "feedback",
+            "feature": f.feature,
+            "rating": f.rating,
+            "comment": f.comment,
+            "student_id": f.student_id,
+            "question": f.question[:100] if f.question else None,
+            "response": f.response[:150] if f.response else None,
+            "summary_type": f.summary_type,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+        })
+    for l in edit_logs:
+        entries.append({
+            "type": "quiz_edit",
+            "action": l.action,
+            "quiz_id": l.quiz_id,
+            "question_id": l.question_id,
+            "details": l.details,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        })
+
+    # Sort merged list by created_at descending
+    entries.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+    return {"success": True, "count": len(entries), "entries": entries[:limit]}
