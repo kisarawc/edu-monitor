@@ -26,12 +26,12 @@ except Exception as e:
     logger.warning("   - Upload, Summary, and Q&A features will be disabled")
     performance_router = None
 
-# Teacher behavior API - CHANGED FROM modules to models
+# Teacher behavior API - CHANGED FROM models to modules
 try:
-    from models.teacher_behavior.api import router as teacher_behavior_router
-except Exception:
+    from modules.teacher_behavior.api import router as teacher_behavior_router
+except Exception as e:
+    logger.warning(f"⚠️  Teacher behavior router failed to load: {e}")
     teacher_behavior_router = None
-# teacher_behavior_router = None
 
 # CHANGED FROM modules to models
 from modules.engagement.run_inference import run_inference, LATEST_STATS, STATS_HISTORY, LATEST_GROUP_STATS, set_group_visualization
@@ -138,11 +138,11 @@ def read_root():
 if teacher_behavior_router is not None:
     app.include_router(teacher_behavior_router, prefix="/teacher_behavior")
 
-# Server-side teacher behavior inference (stream + stats) - CHANGED FROM modules to models
+# Server-side teacher behavior inference (stream + stats) - CHANGED FROM models to modules
 try:
-    from models.teacher_behavior.inference import run_teacher_inference, get_latest_stats
+    from modules.teacher_behavior.inference import run_teacher_inference, get_latest_stats
 except Exception as e:
-    print(f"CRITICAL: models.teacher_behavior.inference failed to import: {e}")
+    logger.critical(f"CRITICAL: modules.teacher_behavior.inference failed to import: {e}")
     run_teacher_inference = None
     def get_latest_stats():
         return {"behavior": "Unavailable", "mobility": 0.0, "orientation": 0.0, "hand_speed": 0.0}

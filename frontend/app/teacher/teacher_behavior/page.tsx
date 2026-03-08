@@ -3,9 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Activity, Move, Compass } from 'lucide-react';
 
-type Stats = { behavior: string; mobility: number; orientation: number; hand_speed?: number };
-type Sample = { ts: number; behavior: string; mobility: number; orientation: number; hand_speed?: number };
-
+type Stats = { behavior: string; mobility: number; orientation: number; hand_speed?: number; camera_source?: string };
+type Sample = { ts: number; behavior: string; mobility: number; orientation: number; hand_speed?: number; camera_source?: string };
 export default function TeacherBehaviorPage() {
     const [stats, setStats] = useState<Stats>({ behavior: 'Initializing...', mobility: 0, orientation: 0 });
 
@@ -15,6 +14,7 @@ export default function TeacherBehaviorPage() {
     const [sessionEnd, setSessionEnd] = useState<number | null>(null);
     const [sessionBuffer, setSessionBuffer] = useState<Sample[]>([]);
     const [summary, setSummary] = useState<string | null>(null);
+
 
     const LIVE_WINDOW_SEC = 180; // 3 minutes
 
@@ -40,15 +40,28 @@ export default function TeacherBehaviorPage() {
         return () => clearInterval(interval);
     }, [isRecording, sessionStart]);
 
+    // Clear backend registration lock on page refresh or close
+    useEffect(() => {
+        const handleUnload = () => {
+            // sendBeacon is reliable during page unload
+            navigator.sendBeacon('http://localhost:8000/teacher_behavior/reset_registration');
+        };
+        window.addEventListener('beforeunload', handleUnload);
+        return () => window.removeEventListener('beforeunload', handleUnload);
+    }, []);
+
+
     const getBehaviorColor = (b: string) => {
         if (b === 'INTERACTIVE') return 'text-emerald-400';
         if (b === 'LECTURING') return 'text-blue-400';
+        if (b === 'NOT DETECTED') return 'text-gray-500';
         return 'text-orange-400';
     };
 
     const behaviorBg = (b: string) => {
         if (b === 'INTERACTIVE') return 'bg-emerald-400';
         if (b === 'LECTURING') return 'bg-blue-400';
+        if (b === 'NOT DETECTED') return 'bg-gray-600';
         return 'bg-orange-400';
     };
 
@@ -242,7 +255,12 @@ export default function TeacherBehaviorPage() {
         setSummary(null);
         setSessionSnapshot(null);
         setSummaryMetrics(null);
+
+        // Also wipe backend lock so a new teacher can register
+        fetch('http://localhost:8000/teacher_behavior/reset_registration', { method: 'POST' })
+            .catch(err => console.error("Failed to reset backend registration", err));
     };
+
 
     const formatDuration = (start: number | null, end: number | null) => {
         if (!start) return '0s';
@@ -294,9 +312,43 @@ export default function TeacherBehaviorPage() {
                 </div>
 
                 <div className="flex-1 flex gap-6 p-6 overflow-hidden min-h-0">
-                    <div className="flex-1 bg-gray-800 rounded-2xl overflow-hidden border border-gray-700 shadow-xl flex items-center justify-center p-4">
-                        <div className="w-full h-80 md:h-96 bg-black flex items-center justify-center rounded-lg overflow-hidden">
+                    <div className="flex-1 bg-gray-800 rounded-2xl overflow-hidden border border-gray-700 shadow-xl flex flex-col p-4 relative">
+                        <div className="w-full flex-1 bg-black flex items-center justify-center rounded-lg overflow-hidden relative">
                             <img src="http://localhost:8000/teacher_feed" alt="Feed" className="w-auto h-full object-contain" />
+                            {/* Camera source badge */}
+                            <div className={`absolute top-3 left-3 px-3 py-1 rounded-full text-xs font-bold shadow-lg ${stats.camera_source === 'CAM2'
+                                ? 'bg-emerald-500/80 text-white border border-emerald-400'
+                                : 'bg-blue-500/80 text-white border border-blue-400'
+                                }`}>
+                                🎥 {stats.camera_source === 'CAM2' ? 'CAM 2 — BACK/AISLE' : 'CAM 1 — FRONT'}
+                            </div>
+                        </div>
+
+                        {/* Interactive Boundary Calibrator */}
+                        <div className="mt-4 p-4 bg-gray-900 rounded-lg border border-gray-700">
+                            <div className="flex justify-between items-center mb-2">
+                                <label className="text-sm font-medium text-gray-300">Teacher Boundary Line</label>
+                                <span className="text-xs px-2 py-1 bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/30">
+                                    y={stats.mobility !== undefined && stats.behavior !== 'Initializing...' ? stats.mobility : '???'}
+                                </span>
+                            </div>
+                            <input
+                                type="range"
+                                min="0"
+                                max="1080"
+                                defaultValue="720"
+                                className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-red-500"
+                                onChange={(e) => {
+                                    fetch('http://localhost:8000/teacher_behavior/calibrate', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ boundary_y: parseInt(e.target.value) })
+                                    }).catch(err => console.error("Failed to calibrate boundary", err));
+                                }}
+                            />
+                            <p className="text-xs text-gray-500 mt-2">
+                                Slide to adjust the red boundary line. The model will only track the teacher if they are above this line.
+                            </p>
                         </div>
                     </div>
 
@@ -307,7 +359,7 @@ export default function TeacherBehaviorPage() {
                                     <h3 className="text-lg font-semibold">Session Summary</h3>
                                     <div className="text-sm text-gray-300">Start: <span className="text-gray-200 font-medium">{summaryMetrics.startISO}</span></div>
                                     <div className="text-sm text-gray-300">End: <span className="text-gray-200 font-medium">{summaryMetrics.endISO}</span></div>
-                                    <div className="text-sm text-gray-300">Duration: <span className="text-gray-200 font-medium">{Math.floor(summaryMetrics.durationSec/60)}m {summaryMetrics.durationSec%60}s</span></div>
+                                    <div className="text-sm text-gray-300">Duration: <span className="text-gray-200 font-medium">{Math.floor(summaryMetrics.durationSec / 60)}m {summaryMetrics.durationSec % 60}s</span></div>
 
                                     <div className="mt-2">
                                         <div className="text-sm text-gray-300">Distribution</div>

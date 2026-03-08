@@ -9,23 +9,8 @@ export default function Navbar() {
     const { user, logout, isAuthenticated } = useAuth();
     const pathname = usePathname();
 
-    // Don't show navbar on login or register pages if you prefer, 
-    // currently user asked for "each screens", but typically we hide it on auth pages.
-    // However, let's keep it consistent or at least show Home link.
-
-    if (pathname === "/login" || pathname.startsWith("/register")) {
-        return (
-            <nav className="bg-slate-900 border-b border-slate-800 p-4">
-                <div className="max-w-7xl mx-auto flex justify-between items-center">
-                    <Link href="/" className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
-                        EduMonitor
-                    </Link>
-                    <Link href="/" className="text-slate-400 hover:text-white flex items-center gap-2 text-sm">
-                        <Home className="w-4 h-4" /> Home
-                    </Link>
-                </div>
-            </nav>
-        );
+    if (pathname === "/login" || pathname.startsWith("/register") || pathname.startsWith("/student") || pathname.startsWith("/teacher")) {
+        return null;
     }
 
     return (

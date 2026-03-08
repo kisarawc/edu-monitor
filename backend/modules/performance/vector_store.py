@@ -126,6 +126,13 @@ def generate_doc_id(text: str, source: str) -> str:
     return hashlib.md5(content.encode()).hexdigest()
 
 
+def generate_embeddings(texts: List[str]) -> List[List[float]]:
+    """Generate embeddings for a list of texts using sentence-transformers."""
+    model = get_embedding_model()
+    embeddings = model.encode(texts, convert_to_numpy=True)
+    return embeddings.tolist()
+
+
 def _md5_to_uuid(md5_hex: str) -> str:
     """Convert an MD5 hex string to a valid UUID string for Qdrant."""
     return str(uuid.UUID(md5_hex))
@@ -195,6 +202,60 @@ def add_documents(
     
     except Exception as e:
         logger.error(f"Failed to add documents: {e}")
+        raise
+
+
+def add_points_with_embeddings(
+    texts: List[str],
+    embeddings: List[List[float]],
+    source: str = "unknown",
+    collection_name: str = "lecture_content",
+    metadata: Optional[Dict] = None
+) -> int:
+    """
+    Add documents with pre-computed embeddings to the vector store.
+    Used by the ingestion process to avoid lock conflicts.
+    """
+    if not texts or not embeddings or len(texts) != len(embeddings):
+        logger.error(f"Invalid input: {len(texts)} texts, {len(embeddings)} embeddings")
+        return 0
+    
+    try:
+        from qdrant_client.models import PointStruct
+        
+        _ensure_collection(collection_name)
+        client = get_qdrant_client()
+        
+        # Prepare points
+        points = []
+        for i, (text, embedding) in enumerate(zip(texts, embeddings)):
+            doc_id = generate_doc_id(text, source)
+            point_id = _md5_to_uuid(doc_id)
+            
+            payload = {
+                "document": text,
+                "source": source,
+                "chunk_index": i,
+                **(metadata or {})
+            }
+            
+            points.append(PointStruct(
+                id=point_id,
+                vector=embedding,
+                payload=payload,
+            ))
+        
+        # Upsert to collection
+        client.upsert(
+            collection_name=collection_name,
+            points=points,
+        )
+        
+        logger.info(f"Added {len(texts)} documents with pre-computed embeddings (source: {source})")
+        return len(texts)
+    
+    except Exception as e:
+        logger.error(f"Failed to add points with embeddings: {e}")
         raise
 
 

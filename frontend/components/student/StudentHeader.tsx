@@ -5,9 +5,11 @@ import { GraduationCap, UserCheck, Brain, FileText } from "lucide-react";
 import Link from "next/link";
 import UserProfileMenu from "../UserProfileMenu";
 import { useEffect, useState } from "react";
+import { useQuiz } from "@/context/QuizContext";
 
 export default function StudentHeader() {
     const { user } = useAuth();
+    const { triggerQuiz, quizNotification } = useQuiz();
     const [contentCount, setContentCount] = useState<number | null>(null);
 
     useEffect(() => {
@@ -46,8 +48,23 @@ export default function StudentHeader() {
                     className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors text-sm font-medium"
                 >
                     <UserCheck size={16} />
-                    <span className="hidden sm:inline">Attendance</span>
+                    Attendance
                 </Link>
+
+                {/* Demo Quiz Button */}
+                <button
+                    onClick={() => triggerQuiz()}
+                    className="relative flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium"
+                >
+                    <Brain size={16} />
+                    <span className="hidden sm:inline">Demo Quiz</span>
+                    {quizNotification && (
+                        <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-4 w-4 bg-red-500 text-[10px] items-center justify-center font-bold">!</span>
+                        </span>
+                    )}
+                </button>
 
                 <div className="hidden md:flex items-center gap-2 bg-gray-700/50 px-3 py-1.5 rounded-lg border border-gray-600/50">
                     <FileText size={14} className="text-emerald-400" />

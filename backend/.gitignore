@@ -1,0 +1,49 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.env
+
+# SQLite Databases
+*.db
+
+# Logs and debug output
+*.log
+results.txt
+seed_output*.txt
+test_output.log
+inference_debug.log
+
+# Video and Image Data
+*.mp4
+*.avi
+*.jpg
+*.jpeg
+*.png
+
+# Machine Learning Models and Weights
+*.pt
+*.pth
+*.pkl
+
+# ChromaDB or Vector DBs
+chroma_db/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Testing and Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+.tox/
+
+# Windows specific
+sqlite3.dll
+backend\modules\engagement\yolov8s.onnx

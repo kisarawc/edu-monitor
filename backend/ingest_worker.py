@@ -35,7 +35,7 @@ def main():
         
         # Import here to avoid loading heavy libraries until needed
         from modules.performance.document_processor import process_document
-        from modules.performance.vector_store import add_documents
+        from modules.performance.vector_store import generate_embeddings
 
         # Read the temp file
         with open(file_path, 'rb') as f:
@@ -49,14 +49,9 @@ def main():
             sys.stdout.write(json.dumps({"success": False, "error": "No text extracted"}))
             return
 
-
-        # Store
-        logger.info(f"Storing {len(chunks)} chunks in vector DB...")
-        num_stored = add_documents(
-            texts=chunks,
-            source="slides",
-            metadata={"filename": original_filename}
-        )
+        # Generate embeddings in the worker process (heavy task)
+        logger.info(f"Generating embeddings for {len(chunks)} chunks...")
+        embeddings = generate_embeddings(chunks)
         
         # Clean up temp file
         try:
@@ -65,11 +60,13 @@ def main():
             pass
             
         # Return result as JSON explicitly to stdout
-        # Using sys.stdout.write ensures we control exactly what is sent
+        # Including chunks and embeddings so the parent process can store them
         sys.stdout.write(json.dumps({
             "success": True,
             "filename": original_filename,
-            "chunks_stored": num_stored,
+            "chunks": chunks,
+            "embeddings": embeddings,
+            "chunks_stored": len(chunks), # legacy field for compatibility if needed
             "sample_chunk": chunks[0][:200] + "..." if chunks else None
         }))
         sys.stdout.flush()
