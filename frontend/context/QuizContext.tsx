@@ -1,6 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import { useAuth } from "./AuthContext";
 
 const API_BASE_URL = "http://localhost:8000";
 
@@ -37,6 +38,7 @@ interface QuizContextType {
     nextQuestion: () => void;
     resetQuiz: () => void;
     setSelectedAnswer: (index: number | null) => void;
+    completedQuizzes: Set<string>;
 }
 
 const QuizContext = createContext<QuizContextType | undefined>(undefined);
@@ -52,19 +54,38 @@ export function QuizProvider({ children }: { children: React.ReactNode }) {
     const [hasSubmitted, setHasSubmitted] = useState(false);
     const [quizAnswers, setQuizAnswers] = useState<{ questionId: number; selectedAnswer: number }[]>([]);
 
+    const { user } = useAuth();
+
+    const [completedQuizzes, setCompletedQuizzes] = useState<Set<string>>(new Set());
+
     const fetchReleasedQuizzes = useCallback(async () => {
         try {
             const res = await fetch(`${API_BASE_URL}/api/performance/quiz/released`);
-            if (res.ok) {
+            const rRes = await fetch(`${API_BASE_URL}/api/performance/quiz/responses/all`);
+
+            if (res.ok && rRes.ok) {
                 const data = await res.json();
+                const rData = await rRes.json();
+
                 const quizzes: Quiz[] = data.quizzes || [];
+                const currentStudentId = user?.id ? String(user.id) : "anonymous";
+                const studentResponses = (rData.responses || []).filter(
+                    (r: any) => String(r.student_id) === currentStudentId
+                );
+
+                const completedSet = new Set<string>();
+                studentResponses.forEach((r: any) => completedSet.add(r.quiz_id));
+                setCompletedQuizzes(completedSet);
                 setReleasedQuizzes(quizzes);
-                if (quizzes.length > 0) setQuizNotification(true);
+
+                const uncompleted = quizzes.filter(q => !completedSet.has(q.id));
+                if (uncompleted.length > 0) setQuizNotification(true);
+                else setQuizNotification(false);
             }
         } catch (e) {
             console.error("Failed to fetch quizzes:", e);
         }
-    }, []);
+    }, [user?.id]);
 
     useEffect(() => {
         fetchReleasedQuizzes();
@@ -74,8 +95,20 @@ export function QuizProvider({ children }: { children: React.ReactNode }) {
     }, [fetchReleasedQuizzes]);
 
     const triggerQuiz = (quiz?: Quiz) => {
-        const target = quiz || releasedQuizzes[0];
+        let target = quiz;
+
+        if (!target) {
+            // Find first uncompleted quiz
+            target = releasedQuizzes.find(q => !completedQuizzes.has(q.id));
+        }
+
+        if (!target && releasedQuizzes.length > 0) {
+            // Fallback to first quiz if all are completed (just to show something, though it will be blocked)
+            target = releasedQuizzes[0];
+        }
+
         if (!target) return;
+
         setActiveQuiz(target);
         setCurrentQuizIndex(0);
         setShowQuizPopup(true);
@@ -109,19 +142,26 @@ export function QuizProvider({ children }: { children: React.ReactNode }) {
             setHasSubmitted(false);
         } else {
             const allAnswers = [...quizAnswers];
+            const currentStudentId = user?.id ? String(user.id) : "anonymous";
+            const currentStudentName = user?.username ? user.username : `Student (${currentStudentId.substring(8)})`;
             try {
                 const res = await fetch(`${API_BASE_URL}/api/performance/quiz/${activeQuiz.id}/submit`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        student_id: "anonymous",
-                        student_name: "Student",
+                        student_id: currentStudentId,
+                        student_name: currentStudentName,
                         answers: allAnswers,
                     }),
                 });
                 const data = await res.json();
                 if (res.ok && data.success) {
                     setQuizResult({ score: data.result.score, total: data.result.total });
+                    setCompletedQuizzes(prev => {
+                        const newSet = new Set(prev);
+                        newSet.add(activeQuiz.id);
+                        return newSet;
+                    });
                     // Keep showQuizPopup true to show the result modal!
                 } else {
                     setShowQuizPopup(false);
@@ -139,6 +179,7 @@ export function QuizProvider({ children }: { children: React.ReactNode }) {
         setActiveQuiz(null);
         setSelectedAnswer(null);
         setHasSubmitted(false);
+        fetchReleasedQuizzes(); // Refresh list to update notifications
     };
 
     return (
@@ -158,6 +199,7 @@ export function QuizProvider({ children }: { children: React.ReactNode }) {
                 nextQuestion,
                 resetQuiz,
                 setSelectedAnswer,
+                completedQuizzes,
             }}
         >
             {children}

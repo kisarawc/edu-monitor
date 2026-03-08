@@ -5,7 +5,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 const API_BASE_URL = "http://localhost:8000";
 
 // How often to send audio chunks for transcription (ms)
-const CHUNK_INTERVAL = 5000;
+const CHUNK_INTERVAL = 4000;
 
 // Typewriter animation speed (ms per character)
 const TYPEWRITER_SPEED = 20;
@@ -126,7 +126,7 @@ export function useLocalSTT(
         const stream = mediaStreamRef.current;
         // Don't start if we're not recording or stream is dead
         if (!stream || !isRecordingRef.current) return;
-        
+
         // Check if stream tracks are still alive
         const audioTrack = stream.getAudioTracks()[0];
         if (!audioTrack || audioTrack.readyState === "ended") return;

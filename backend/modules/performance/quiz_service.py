@@ -58,6 +58,29 @@ IMPORTANT:
 - For Intermediate: test application and analysis
 - For Advanced: test evaluation and synthesis"""
 
+SINGLE_QUESTION_PROMPT = """Based on the following lecture content and learning outcomes, generate exactly ONE multiple-choice question at {difficulty} difficulty level.
+
+This is a REGENERATION request. The new question MUST be different from the previous question provided below:
+PREVIOUS QUESTION TO REPLACE:
+{previous_question}
+
+LECTURE CONTENT:
+{content}
+
+LEARNING OUTCOMES TO ASSESS:
+{outcomes}
+
+Respond with ONLY a JSON array containing a single question object (no markdown, no explanation) in this exact format:
+[
+  {{
+    "question": "The question text",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correctAnswer": 0,
+    "learningOutcome": "The learning outcome text this question assesses",
+    "difficulty": "{difficulty}"
+  }}
+]"""
+
 
 def _parse_quiz_json(raw: str) -> List[Dict]:
     """
@@ -265,6 +288,100 @@ def generate_quiz(
     return get_quiz(quiz_db.id, db)
 
 
+def regenerate_quiz_question(
+    question_id: int,
+    db: Session,
+) -> Dict:
+    """
+    Generate a single replacement question for a specific question ID.
+    Re-uses the context and learning outcomes to fetch a new question from the LLM.
+    
+    Args:
+        question_id: The ID of the QuizQuestion to replace
+        db: Database session
+        
+    Returns:
+        The updated question dictionary
+    """
+    if not is_ollama_available():
+        raise RuntimeError("Ollama LLM is not available. Please install and run Ollama.")
+
+    # Get the existing question
+    question = db.query(QuizQuestion).filter(QuizQuestion.id == question_id).first()
+    if not question:
+        raise ValueError(f"Question with ID {question_id} not found.")
+
+    # Get the parent quiz
+    quiz = db.query(Quiz).filter(Quiz.id == question.quiz_id).first()
+    if not quiz:
+        raise ValueError("Parent quiz not found.")
+
+    # Get learning outcomes and content
+    outcomes = get_learning_outcomes(db)
+    all_content = get_all_content(limit=30)
+    
+    if not outcomes or not all_content:
+        raise ValueError("Required context (outcomes or lecture content) missing for regeneration.")
+
+    content_text = "\n\n---\n\n".join(c["text"] for c in all_content)
+    outcomes_text = "\n".join(f"{i+1}. {o['text']}" for i, o in enumerate(outcomes))
+    
+    prev_question_text = f"Q: {question.question}\nA: {question.options[question.correct_answer]}"
+
+    prompt = SINGLE_QUESTION_PROMPT.format(
+        difficulty=quiz.difficulty,
+        previous_question=prev_question_text,
+        content=content_text,
+        outcomes=outcomes_text,
+    )
+
+    logger.info(f"Regenerating question {question_id} at {quiz.difficulty} difficulty")
+
+    raw_response = generate_complete(
+        prompt=prompt,
+        system_prompt=QUIZ_SYSTEM_PROMPT,
+        temperature=0.6,
+        max_tokens=2048,
+    )
+
+    if not raw_response:
+        raise RuntimeError("LLM returned an empty response. Please try again.")
+
+    parsed_q = _parse_quiz_json(raw_response)
+    if not parsed_q or not isinstance(parsed_q, list) or len(parsed_q) == 0:
+        raise RuntimeError("Failed to parse a valid replacement question.")
+        
+    new_q = parsed_q[0]
+    
+    # Validation
+    if not all(k in new_q for k in ("question", "options", "correctAnswer")):
+        raise RuntimeError("Generated question missing required fields.")
+    if not isinstance(new_q["options"], list) or len(new_q["options"]) != 4:
+        raise RuntimeError("Generated question must have exactly 4 options.")
+        
+    correct = new_q["correctAnswer"]
+    if not isinstance(correct, int) or correct < 0 or correct > 3:
+        correct = 0
+
+    # Update database
+    question.question = str(new_q["question"])
+    question.options = [str(o) for o in new_q["options"]]
+    question.correct_answer = correct
+    if new_q.get("learningOutcome"):
+        question.learning_outcome = new_q.get("learningOutcome")
+        
+    db.commit()
+
+    return {
+        "id": question.id,
+        "question": question.question,
+        "options": question.options,
+        "correctAnswer": question.correct_answer,
+        "learningOutcome": question.learning_outcome,
+        "difficulty": question.difficulty,
+    }
+
+
 # ─── Quiz CRUD ──────────────────────────────────────────────────────────────
 
 def _format_quiz(quiz: Quiz) -> Dict:
@@ -327,6 +444,43 @@ def delete_quiz(quiz_id: str, db: Session) -> bool:
     db.commit()
     logger.info(f"Deleted quiz {quiz_id}")
     return True
+
+
+def update_quiz_questions(quiz_id: str, updated_questions: List[Dict], db: Session) -> Optional[Dict]:
+    """
+    Update the questions of an existing quiz.
+    Replaces the text, options, and correct answers.
+    """
+    quiz = db.query(Quiz).filter(Quiz.id == quiz_id).first()
+    if not quiz:
+        return None
+
+    for q_data in updated_questions:
+        q_id = q_data.get("id")
+        if not q_id:
+            continue
+            
+        question = db.query(QuizQuestion).filter(
+            QuizQuestion.id == q_id, 
+            QuizQuestion.quiz_id == quiz_id
+        ).first()
+        
+        if question:
+            question.question = str(q_data.get("question", question.question))
+            if "options" in q_data and isinstance(q_data["options"], list) and len(q_data["options"]) == 4:
+                question.options = [str(o) for o in q_data["options"]]
+            
+            if "correctAnswer" in q_data:
+                correct = q_data["correctAnswer"]
+                if isinstance(correct, int) and 0 <= correct <= 3:
+                    question.correct_answer = correct
+                    
+            if "learningOutcome" in q_data:
+                question.learning_outcome = q_data.get("learningOutcome")
+
+    db.commit()
+    logger.info(f"Updated questions for quiz {quiz_id}")
+    return get_quiz(quiz_id, db)
 
 
 def get_released_quizzes(db: Session) -> List[Dict]:

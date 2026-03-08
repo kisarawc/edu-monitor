@@ -57,7 +57,7 @@ export default function StudentHeader() {
                     className="relative flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-sm font-medium"
                 >
                     <Brain size={16} />
-                    <span className="hidden sm:inline">Demo Quiz</span>
+                    <span className="hidden sm:inline">Quiz</span>
                     {quizNotification && (
                         <span className="absolute -top-1 -right-1 flex h-4 w-4">
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>

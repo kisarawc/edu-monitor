@@ -129,6 +129,11 @@ export default function StudentPerformanceSection() {
     const [analyticsData, setAnalyticsData] = useState<any>(null);
     const [isAnalyticsLoading, setIsAnalyticsLoading] = useState(false);
 
+    // Edit Quiz modal state
+    const [editingQuiz, setEditingQuiz] = useState<Quiz | null>(null);
+    const [isSavingQuiz, setIsSavingQuiz] = useState(false);
+    const [isRegeneratingQuestion, setIsRegeneratingQuestion] = useState<number | null>(null);
+
     // Tab state
     const [activeTab, setActiveTab] = useState<'content' | 'quiz'>('content');
 
@@ -262,6 +267,87 @@ export default function StudentPerformanceSection() {
         } catch (e) { console.error('Failed to release quiz:', e); }
     };
 
+    // ===== EDIT QUIZ FUNCTIONS =====
+    const openEditQuiz = (quiz: Quiz) => {
+        // Create a deep copy to allow editing without mutating the original until saved
+        setEditingQuiz(JSON.parse(JSON.stringify(quiz)));
+    };
+
+    const closeEditQuiz = () => {
+        setEditingQuiz(null);
+    };
+
+    const handleEditQuestionText = (qIndex: number, text: string) => {
+        if (!editingQuiz) return;
+        const newQuiz = { ...editingQuiz };
+        newQuiz.questions[qIndex].question = text;
+        setEditingQuiz(newQuiz);
+    };
+
+    const handleEditOptionText = (qIndex: number, optIndex: number, text: string) => {
+        if (!editingQuiz) return;
+        const newQuiz = { ...editingQuiz };
+        newQuiz.questions[qIndex].options[optIndex] = text;
+        setEditingQuiz(newQuiz);
+    };
+
+    const handleSetCorrectAnswer = (qIndex: number, optIndex: number) => {
+        if (!editingQuiz) return;
+        const newQuiz = { ...editingQuiz };
+        newQuiz.questions[qIndex].correctAnswer = optIndex;
+        setEditingQuiz(newQuiz);
+    };
+
+    const saveEditedQuiz = async () => {
+        if (!editingQuiz) return;
+        setIsSavingQuiz(true);
+        try {
+            const res = await fetch(`${API_BASE_URL}/api/performance/quiz/${editingQuiz.id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ questions: editingQuiz.questions })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                // Update local list
+                setQuizzes(quizzes.map(q => q.id === editingQuiz.id ? data.quiz : q));
+                setEditingQuiz(null);
+            } else {
+                alert(`Failed to save quiz: ${data.detail || 'Unknown error'}`);
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Failed to connect to server to save quiz.');
+        } finally {
+            setIsSavingQuiz(false);
+        }
+    };
+
+    const regenerateQuestion = async (qIndex: number, questionId: number) => {
+        if (!editingQuiz) return;
+        setIsRegeneratingQuestion(questionId);
+        try {
+            const res = await fetch(`${API_BASE_URL}/api/performance/quiz/regenerate-question`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question_id: questionId })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                const newQuiz = { ...editingQuiz };
+                newQuiz.questions[qIndex] = data.question;
+                setEditingQuiz(newQuiz);
+            } else {
+                alert(`Failed to regenerate question: ${data.detail || 'Unknown error'}`);
+            }
+        } catch (e) {
+            console.error(e);
+            alert('Failed to connect to server to regenerate question.');
+        } finally {
+            setIsRegeneratingQuestion(null);
+        }
+    };
+
     const fetchAnalytics = async (quizId: string) => {
         setIsAnalyticsLoading(true);
         setShowAnalytics(true);
@@ -317,10 +403,8 @@ export default function StudentPerformanceSection() {
         stop: stopRecording,
         clear: clearSTT,
     } = useLocalSTT((finalText: string) => {
-        // Track auto-submit count when Whisper transcribes + stores a chunk
-        setAutoSubmitCount(prev => prev + 1);
-        setLastAutoSubmit(new Date());
-        fetchStats();
+        // Append newly transcribed text from Whisper
+        pendingTranscriptRef.current += finalText + " ";
     });
 
     // Fetch stats on mount
@@ -702,7 +786,7 @@ export default function StudentPerformanceSection() {
                                 <div className="p-4 border-b border-gray-700 bg-gray-900/50">
                                     <h3 className="font-semibold flex items-center gap-2">
                                         <ClipboardPaste size={18} className="text-orange-400" />
-                                        Paste Transcript (Demo Mode)
+                                        Paste Transcript 
                                     </h3>
                                     <p className="text-xs text-gray-500 mt-1">Paste lecture transcript text directly for testing without recording</p>
                                 </div>
@@ -971,12 +1055,20 @@ export default function StudentPerformanceSection() {
                                                                 </button>
                                                             </div>
                                                         ) : (
-                                                            <button
-                                                                onClick={() => releaseQuiz(quiz.id)}
-                                                                className="w-full py-2 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700"
-                                                            >
-                                                                <PlayCircle size={16} />Release to Class
-                                                            </button>
+                                                            <div className="flex gap-2 w-full">
+                                                                <button
+                                                                    onClick={() => openEditQuiz(quiz)}
+                                                                    className="flex-1 py-2 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 bg-gray-700 text-gray-200 hover:bg-gray-600"
+                                                                >
+                                                                    <Settings size={16} />Edit
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => releaseQuiz(quiz.id)}
+                                                                    className="flex-[2] py-2 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 bg-indigo-600 text-white hover:bg-indigo-700"
+                                                                >
+                                                                    <PlayCircle size={16} />Release to Class
+                                                                </button>
+                                                            </div>
                                                         )}
                                                     </div>
                                                 </div>
@@ -1407,6 +1499,98 @@ export default function StudentPerformanceSection() {
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* ===== EDIT QUIZ MODAL ===== */}
+            {editingQuiz && (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+                    <div className="bg-gray-900 rounded-2xl border border-indigo-500/50 shadow-2xl shadow-indigo-500/20 w-full max-w-4xl max-h-[90vh] mx-4 flex flex-col">
+                        <div className="bg-gradient-to-r from-gray-800 to-gray-700 px-6 py-4 border-b border-gray-700 flex items-center justify-between shrink-0">
+                            <div className="flex items-center gap-3">
+                                <div className="p-2 bg-gray-600 rounded-lg">
+                                    <Settings size={22} className="text-gray-200" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-white text-lg">Edit Quiz</h3>
+                                    <p className="text-sm text-gray-400">Modify questions, answers, and regenerate questions.</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={closeEditQuiz}
+                                className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
+                            >
+                                <X size={20} className="text-gray-400" />
+                            </button>
+                        </div>
+
+                        <div className="p-6 overflow-y-auto flex-1 space-y-6">
+                            {editingQuiz.questions.map((question, qIndex) => (
+                                <div key={question.id || qIndex} className="bg-gray-800/80 p-5 rounded-xl border border-gray-700 space-y-4">
+                                    <div className="flex justify-between items-start gap-4">
+                                        <div className="flex-1 space-y-2">
+                                            <div className="flex items-center gap-2 mb-2">
+                                                <span className="bg-indigo-500/20 text-indigo-400 text-xs px-2.5 py-1 rounded-full font-medium">Question {qIndex + 1}</span>
+                                                {question.learningOutcome && (
+                                                    <span className="text-xs text-emerald-400/80 line-clamp-1 border border-emerald-500/20 rounded px-2 py-0.5">LO: {question.learningOutcome}</span>
+                                                )}
+                                            </div>
+                                            <textarea
+                                                className="w-full bg-gray-900/50 border border-gray-600 rounded-lg p-3 text-white focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 min-h-[80px]"
+                                                value={question.question}
+                                                onChange={(e) => handleEditQuestionText(qIndex, e.target.value)}
+                                            />
+                                        </div>
+                                        <button
+                                            onClick={() => regenerateQuestion(qIndex, question.id)}
+                                            disabled={isRegeneratingQuestion === question.id}
+                                            className="px-4 py-2 bg-purple-600/20 text-purple-400 border border-purple-500/30 rounded-lg hover:bg-purple-600/30 transition-colors flex items-center gap-2 whitespace-nowrap disabled:opacity-50"
+                                        >
+                                            {isRegeneratingQuestion === question.id ? (
+                                                <><Loader2 size={16} className="animate-spin" />Regenerating...</>
+                                            ) : (
+                                                <><Wand2 size={16} />Regenerate</>
+                                            )}
+                                        </button>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                                        {question.options.map((opt, optIndex) => (
+                                            <div key={optIndex} className={`flex items-center gap-3 p-2 rounded-lg border transition-colors ${question.correctAnswer === optIndex ? 'border-emerald-500 bg-emerald-500/10' : 'border-gray-700 bg-gray-900/30'}`}>
+                                                <button
+                                                    onClick={() => handleSetCorrectAnswer(qIndex, optIndex)}
+                                                    className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ${question.correctAnswer === optIndex ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-gray-500 hover:border-emerald-400/50'}`}
+                                                >
+                                                    {question.correctAnswer === optIndex && <CheckCircle2 size={14} />}
+                                                </button>
+                                                <input
+                                                    className={`w-full bg-transparent border-none text-sm focus:outline-none focus:ring-0 ${question.correctAnswer === optIndex ? 'text-emerald-300' : 'text-gray-300'}`}
+                                                    value={opt}
+                                                    onChange={(e) => handleEditOptionText(qIndex, optIndex, e.target.value)}
+                                                />
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="px-6 py-4 border-t border-gray-700 bg-gray-800/50 flex justify-end gap-3 shrink-0">
+                            <button
+                                onClick={closeEditQuiz}
+                                className="px-4 py-2 bg-gray-700 text-gray-300 rounded-lg font-medium hover:bg-gray-600 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={saveEditedQuiz}
+                                disabled={isSavingQuiz}
+                                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                            >
+                                {isSavingQuiz ? <Loader2 size={16} className="animate-spin" /> : <CheckCheck size={16} />}
+                                Save Changes
+                            </button>
                         </div>
                     </div>
                 </div>

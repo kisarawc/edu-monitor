@@ -185,15 +185,18 @@ LECTURE CONTENT:
 
 Please provide a well-structured summary covering the main topics and key points."""
 
-QA_SYSTEM_PROMPT = """You are an educational assistant helping students understand lecture content.
-Answer questions based ONLY on the provided context. If the answer is not in the context, say so.
-Provide clear, educational explanations."""
+QA_SYSTEM_PROMPT = """You are an expert teaching assistant helping students learn from a lecture.
+Your primary job is to answer the student's question by extracting information directly from the provided lecture transcript.
+You must focus heavily on the provided text. Only use outside knowledge to explain or clarify what was said in the transcript.
+If the answer cannot be deduced from the transcript, politely state that it was not covered in the lecture."""
 
-QA_PROMPT_TEMPLATE = """Use the following lecture content to answer the student's question.
-If the answer is not found in the content, acknowledge that and provide general guidance.
+QA_PROMPT_TEMPLATE = """Use the following lecture transcript to answer the student's question. Focus closely on what the teacher actually said.
+If you need to use outside knowledge to explain a concept from the transcript, clearly relate it back to the transcript.
+If the answer is completely missing from the transcript, acknowledge that before optionally providing general guidance.
 
-LECTURE CONTENT:
+--- LECTURE TRANSCRIPT ---
 {context}
+--------------------------
 
 STUDENT QUESTION: {question}
 

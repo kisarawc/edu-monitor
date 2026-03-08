@@ -35,15 +35,23 @@ def get_whisper_model():
 
     _model_loading = True
     try:
+        import torch
         from faster_whisper import WhisperModel
 
         model_size = os.environ.get("WHISPER_MODEL_SIZE", "small")
-        logger.info(f"Loading Faster Whisper model '{model_size}' (this may take a moment on first run)...")
+        
+        # Check for GPU availability
+        has_gpu = torch.cuda.is_available()
+        device_type = "cuda" if has_gpu else "cpu"
+        compute_type = "float16" if has_gpu else "int8"
+        
+        logger.info(f"Loading Faster Whisper model '{model_size}' on {device_type.upper()} (compute: {compute_type})...")
 
         _model = WhisperModel(
             model_size,
-            device="cpu",
-            compute_type="int8",  # Fastest on CPU with minimal accuracy loss
+            device=device_type,
+            compute_type=compute_type,
+            cpu_threads=4 if not has_gpu else 0, # Use 4 threads for CPU inference for an instant speedup
         )
 
         logger.info(f"✅ Faster Whisper model '{model_size}' loaded successfully")
@@ -79,21 +87,21 @@ def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> Option
             tmp_path = tmp.name
 
         try:
-            # Transcribe with accuracy-focused settings
+            # Transcribe with maximum speed settings (greedy decoding only)
             segments, info = model.transcribe(
                 tmp_path,
                 language="en",
-                beam_size=5,  # Higher = more accurate (was 3)
-                best_of=3,  # Consider top 3 candidates
-                temperature=0.0,  # Greedy decoding for consistency
-                condition_on_previous_text=True,  # Use context from previous segments
-                vad_filter=True,  # Skip silence
+                beam_size=1,  # Pure greedy decoding is the only way to get real-time CPU speeds
+                best_of=1,    # Only evaluate top candidate
+                temperature=0.0,
+                condition_on_previous_text=False, # Disable to prevent slow context window building
+                vad_filter=True,
                 vad_parameters=dict(
-                    min_silence_duration_ms=300,
-                    speech_pad_ms=200,
+                    min_silence_duration_ms=200,
+                    speech_pad_ms=100,
                 ),
-                no_speech_threshold=0.6,  # Filter out non-speech
-                log_prob_threshold=-1.0,  # Accept segments with reasonable confidence
+                no_speech_threshold=0.6,
+                log_prob_threshold=-1.0,
             )
 
             # Collect all segment text
