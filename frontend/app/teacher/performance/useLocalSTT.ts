@@ -215,15 +215,18 @@ export function useLocalSTT(
         isRecordingRef.current = false;
         setIsRecording(false);
 
+        // Prevent the final chunk from being sent (which fixes the 'mute' bug)
+        pendingStopRef.current = true;
+
         // Clear the chunk interval immediately
         if (intervalRef.current) {
             clearInterval(intervalRef.current);
             intervalRef.current = null;
         }
 
-        // Stop current recorder — send the final chunk
+        // Stop current recorder — onstop will fire but will discard the chunk
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-            mediaRecorderRef.current.stop(); // Will trigger onstop → send last chunk
+            mediaRecorderRef.current.stop();
         }
         mediaRecorderRef.current = null;
 
