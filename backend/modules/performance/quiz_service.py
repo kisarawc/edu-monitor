@@ -636,6 +636,28 @@ def get_released_quizzes(db: Session) -> List[Dict]:
 
 # ─── Student Responses ──────────────────────────────────────────────────────
 
+def has_student_completed_quiz(quiz_id: str, student_id: str, db: Session) -> bool:
+    """
+    Check if a student has already submitted a response for a specific quiz.
+
+    Args:
+        quiz_id: ID of the quiz
+        student_id: Student identifier
+        db: Database session
+
+    Returns:
+        True if the student already has a submission, False otherwise
+    """
+    return (
+        db.query(QuizResponse)
+        .filter(
+            QuizResponse.quiz_id == quiz_id,
+            QuizResponse.student_id == student_id,
+        )
+        .first()
+        is not None
+    )
+
 def submit_quiz_response(
     quiz_id: str,
     student_id: str,
@@ -659,6 +681,13 @@ def submit_quiz_response(
     quiz = get_quiz(quiz_id, db)
     if not quiz:
         raise ValueError(f"Quiz {quiz_id} not found")
+
+    # Enforce one-attempt rule: reject if student already submitted
+    if has_student_completed_quiz(quiz_id, student_id, db):
+        raise ValueError(
+            f"Student {student_id} has already submitted quiz {quiz_id}. "
+            "Each quiz can only be attempted once."
+        )
 
     # Grade the answers
     results = []

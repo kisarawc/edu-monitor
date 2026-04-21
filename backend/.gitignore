@@ -31,8 +31,11 @@ inference_debug.log
 *.pth
 *.pkl
 
-# ChromaDB or Vector DBs
-chroma_db/
+# Vector DB runtime data (Qdrant)
+modules/performance/vector_db/
+
+# Performance module runtime data (JSON artifacts)
+modules/performance/data/*.json
 
 # OS generated files
 .DS_Store

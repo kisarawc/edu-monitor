@@ -70,7 +70,8 @@ export default function StudentDashboard() {
     closeQuiz,
     submitQuizAnswer,
     nextQuestion,
-    setSelectedAnswer
+    setSelectedAnswer,
+    isStartingQuiz,
   } = useQuiz();
 
   const currentQuestion = activeQuiz ? activeQuiz.questions[currentQuizIndex] : null;
@@ -404,13 +405,17 @@ export default function StudentDashboard() {
 
                     <button
                       onClick={() => triggerQuiz(quiz)}
-                      disabled={isCompleted}
+                      disabled={isCompleted || isStartingQuiz}
                       className={`w-full py-2.5 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${isCompleted
                         ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        : isStartingQuiz
+                        ? 'bg-indigo-600/60 text-white cursor-wait'
                         : 'bg-indigo-600 text-white hover:bg-indigo-700'
                         }`}
                     >
-                      {isCompleted ? 'Already Submitted' : 'Start Quiz'}
+                      {isCompleted ? 'Already Submitted' : isStartingQuiz ? (
+                        <><Loader2 size={16} className="animate-spin" /> Checking...</>
+                      ) : 'Start Quiz'}
                     </button>
                   </div>
                 );

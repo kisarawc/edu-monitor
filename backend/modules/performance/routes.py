@@ -57,7 +57,8 @@ from .quiz_service import (
     get_quiz_responses,
     get_quiz_analytics,
     regenerate_quiz_question,
-    update_quiz_questions
+    update_quiz_questions,
+    has_student_completed_quiz,
 )
 
 logger = logging.getLogger(__name__)
@@ -689,10 +690,28 @@ async def submit_quiz(quiz_id: str, request: QuizSubmitRequest, db: Session = De
         )
         return {"success": True, "result": result}
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        msg = str(e)
+        # Return 409 Conflict when student already submitted
+        if "already submitted" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=404, detail=msg)
     except Exception as e:
         logger.error(f"Quiz submission error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/quiz/{quiz_id}/check-attempt")
+async def check_quiz_attempt(
+    quiz_id: str,
+    student_id: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Check whether a student has already submitted a response for a given quiz.
+    Returns {"completed": true/false}.
+    """
+    completed = has_student_completed_quiz(quiz_id, student_id, db)
+    return {"completed": completed}
 
 
 @router.get("/quiz/{quiz_id}/responses")
