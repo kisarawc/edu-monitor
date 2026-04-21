@@ -388,3 +388,99 @@ def clear_collection(collection_name: str = "lecture_content") -> bool:
     except Exception as e:
         logger.error(f"Failed to clear collection: {e}")
         return False
+
+
+def retrieve_relevant_chunks(
+    queries: List[str],
+    top_k_per_query: int = 3,
+    min_similarity: float = 0.3,
+    max_total_chunks: int = 8,
+    collection_name: str = "lecture_content",
+) -> List[Dict]:
+    """
+    Retrieve chunks relevant to multiple queries (e.g. learning outcomes),
+    deduplicated and ranked by relevance score.
+
+    Instead of blindly fetching the first N chunks from the database,
+    this function:
+    1. Runs a semantic search for each query
+    2. Collects results, deduplicates by document ID
+    3. Filters out low-similarity matches
+    4. Returns the top max_total_chunks ranked by score
+
+    Args:
+        queries: List of query strings (e.g. learning outcome texts)
+        top_k_per_query: How many results to fetch per query
+        min_similarity: Minimum cosine similarity threshold (0.0 to 1.0)
+        max_total_chunks: Maximum total chunks to return
+        collection_name: Qdrant collection name
+
+    Returns:
+        List of chunk dicts with 'text', 'source', 'score', 'metadata' keys,
+        sorted by relevance (highest score first)
+    """
+    if not queries:
+        logger.warning("retrieve_relevant_chunks called with empty queries")
+        return []
+
+    # Collect all results, dedup by document ID
+    seen_ids = set()
+    all_results = []
+
+    for query in queries:
+        try:
+            results = search_similar(
+                query=query,
+                n_results=top_k_per_query,
+                collection_name=collection_name,
+            )
+
+            for doc_text, distance, metadata in results:
+                # Convert distance back to similarity score (cosine)
+                similarity = 1.0 - distance
+
+                # Filter by minimum similarity
+                if similarity < min_similarity:
+                    continue
+
+                # Deduplicate by content hash (first 100 chars + source)
+                source = metadata.get("source", "unknown")
+                doc_id = f"{source}:{doc_text[:100]}"
+
+                if doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
+
+                all_results.append({
+                    "text": doc_text,
+                    "source": source,
+                    "score": similarity,
+                    "metadata": metadata,
+                    "matched_query": query[:80],  # for debugging
+                })
+
+        except Exception as e:
+            logger.error(f"Error searching for query '{query[:50]}...': {e}")
+            continue
+
+    # Sort by relevance score (highest first)
+    all_results.sort(key=lambda x: x["score"], reverse=True)
+
+    # Cap at max_total_chunks
+    selected = all_results[:max_total_chunks]
+
+    logger.info(
+        f"Smart retrieval: {len(queries)} queries → "
+        f"{len(all_results)} unique matches → {len(selected)} selected "
+        f"(min_sim={min_similarity}, max={max_total_chunks})"
+    )
+
+    if selected:
+        scores = [r["score"] for r in selected]
+        logger.info(
+            f"Score range: {min(scores):.3f} to {max(scores):.3f}, "
+            f"avg: {sum(scores)/len(scores):.3f}"
+        )
+
+    return selected
+

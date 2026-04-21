@@ -1,8 +1,10 @@
 """
 LLM Service for Ollama Integration
-Provides streaming text generation and chat completion via local Ollama instance.
+Provides streaming text generation and chat completion via Ollama instance.
+Supports both local and remote Ollama (e.g., Camber GPU cloud).
 Gracefully handles cases when Ollama is not installed or running.
 """
+import os
 import requests
 import json
 import logging
@@ -11,8 +13,21 @@ from typing import Generator, List, Dict, Optional
 # Configure logging
 logger = logging.getLogger(__name__)
 
-OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_MODEL = "llama3-it"
+# Ollama connection — configurable via environment variable
+# Local: http://localhost:11434 (default)
+# Remote (Camber): set OLLAMA_BASE_URL in .env to your Camber endpoint
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3-it")
+
+# Context window configuration
+# Local (16GB RAM): 8192 tokens (safe default, ~600MB KV cache)
+# Camber GPU (24GB VRAM): set OLLAMA_NUM_CTX=16384 or higher in .env
+DEFAULT_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count estimate for Llama models (~4 chars per token)."""
+    return len(text) // 4 if text else 0
 
 # Remove global flag that permanently disabled Ollama
 # _ollama_available = None
@@ -52,7 +67,8 @@ def generate_streaming(
     model: str = DEFAULT_MODEL,
     system_prompt: Optional[str] = None,
     temperature: float = 0.7,
-    max_tokens: int = 2048
+    max_tokens: int = 2048,
+    num_ctx: int = DEFAULT_NUM_CTX
 ) -> Generator[str, None, None]:
     """
     Generate text with streaming response from Ollama.
@@ -65,41 +81,107 @@ def generate_streaming(
 
     url = f"{OLLAMA_BASE_URL}/api/generate"
     
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": True,
-        "options": {
-            "temperature": temperature,
-            "num_predict": max_tokens
+    # Log token usage for debugging
+    prompt_tokens = estimate_tokens(prompt)
+    system_tokens = estimate_tokens(system_prompt) if system_prompt else 0
+    total_input = prompt_tokens + system_tokens
+    logger.info(f"LLM call: ~{total_input} input tokens, num_ctx={num_ctx}, max_output={max_tokens}")
+    
+    if total_input + max_tokens > num_ctx:
+        logger.warning(
+            f"⚠️ Token budget may overflow: input({total_input}) + output({max_tokens}) "
+            f"= {total_input + max_tokens} > num_ctx({num_ctx})"
+        )
+    
+    # Try with progressively smaller context windows if memory is insufficient
+    ctx_sizes_to_try = [num_ctx]
+    for fallback in [4096, 2048]:
+        if fallback < num_ctx and fallback not in ctx_sizes_to_try:
+            ctx_sizes_to_try.append(fallback)
+    
+    last_error = None
+    for try_ctx in ctx_sizes_to_try:
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+                "num_ctx": try_ctx
+            }
         }
-    }
+        
+        if system_prompt:
+            payload["system"] = system_prompt
+        
+        try:
+            with requests.post(url, json=payload, stream=True, timeout=300) as response:
+                if response.status_code == 500:
+                    # Read error body to check if it's a memory issue
+                    error_body = response.text
+                    if "memory" in error_body.lower() or "system memory" in error_body.lower():
+                        logger.warning(
+                            f"⚠️ Ollama out of memory with num_ctx={try_ctx}. "
+                            f"Error: {error_body.strip()}"
+                        )
+                        if try_ctx > ctx_sizes_to_try[-1]:
+                            logger.info(f"Retrying with smaller context window...")
+                            last_error = error_body.strip()
+                            continue
+                        else:
+                            yield (
+                                f"[Out of memory: your system doesn't have enough free RAM "
+                                f"to load the model. Close some applications and try again. "
+                                f"Ollama says: {error_body.strip()}]"
+                            )
+                            return
+                    else:
+                        # Non-memory 500 error
+                        logger.error(f"Ollama 500 error: {error_body.strip()}")
+                        yield f"[Ollama server error: {error_body.strip()}]"
+                        return
+                
+                response.raise_for_status()
+                
+                if try_ctx != num_ctx:
+                    logger.info(f"✅ Successfully using fallback num_ctx={try_ctx}")
+                
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if "response" in data:
+                                yield data["response"]
+                            if data.get("done", False):
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                return  # Success — exit the retry loop
+                
+        except requests.exceptions.ConnectionError:
+            logger.warning("Lost connection to Ollama during generation")
+            yield "[Connection to Ollama lost. Please check if it's still running.]"
+            return
+        except requests.exceptions.Timeout:
+            logger.warning("Ollama request timed out")
+            yield "[Request timed out. The model may be loading or overloaded.]"
+            return
+        except requests.exceptions.HTTPError as e:
+            if e.response and e.response.status_code == 500:
+                # Already handled above in most cases, but catch edge cases
+                last_error = str(e)
+                continue
+            logger.error(f"Ollama request error: {e}")
+            yield f"[Error connecting to Ollama: {str(e)}]"
+            return
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ollama request error: {e}")
+            yield f"[Error connecting to Ollama: {str(e)}]"
+            return
     
-    if system_prompt:
-        payload["system"] = system_prompt
-    
-    try:
-        with requests.post(url, json=payload, stream=True, timeout=300) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if line:
-                    try:
-                        data = json.loads(line)
-                        if "response" in data:
-                            yield data["response"]
-                        if data.get("done", False):
-                            break
-                    except json.JSONDecodeError:
-                        continue
-    except requests.exceptions.ConnectionError:
-        logger.warning("Lost connection to Ollama during generation")
-        yield "[Connection to Ollama lost. Please check if it's still running.]"
-    except requests.exceptions.Timeout:
-        logger.warning("Ollama request timed out")
-        yield "[Request timed out. The model may be loading or overloaded.]"
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ollama request error: {e}")
-        yield f"[Error connecting to Ollama: {str(e)}]"
+    # All retries failed
+    yield f"[All context sizes failed. Last error: {last_error}. Please free up RAM and try again.]"
 
 
 def generate_complete(
@@ -107,7 +189,8 @@ def generate_complete(
     model: str = DEFAULT_MODEL,
     system_prompt: Optional[str] = None,
     temperature: float = 0.7,
-    max_tokens: int = 2048
+    max_tokens: int = 2048,
+    num_ctx: int = DEFAULT_NUM_CTX
 ) -> str:
     """
     Generate text and return complete response (non-streaming).
@@ -117,7 +200,7 @@ def generate_complete(
         logger.info("Skipping LLM generation - Ollama not available")
         return ""
     
-    chunks = list(generate_streaming(prompt, model, system_prompt, temperature, max_tokens))
+    chunks = list(generate_streaming(prompt, model, system_prompt, temperature, max_tokens, num_ctx))
     result = "".join(chunks)
     
     # Check if result is an error message generated by generate_streaming

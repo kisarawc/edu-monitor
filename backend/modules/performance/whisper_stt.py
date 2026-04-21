@@ -35,13 +35,18 @@ def get_whisper_model():
 
     _model_loading = True
     try:
-        import torch
         from faster_whisper import WhisperModel
 
         model_size = os.environ.get("WHISPER_MODEL_SIZE", "small")
         
-        # Check for GPU availability
-        has_gpu = torch.cuda.is_available()
+        # Check for GPU availability (torch is optional)
+        has_gpu = False
+        try:
+            import torch
+            has_gpu = torch.cuda.is_available()
+        except ImportError:
+            logger.info("PyTorch not installed — defaulting to CPU inference")
+        
         device_type = "cuda" if has_gpu else "cpu"
         compute_type = "float16" if has_gpu else "int8"
         
@@ -51,7 +56,7 @@ def get_whisper_model():
             model_size,
             device=device_type,
             compute_type=compute_type,
-            cpu_threads=4 if not has_gpu else 0, # Use 4 threads for CPU inference for an instant speedup
+            cpu_threads=4 if not has_gpu else 0,
         )
 
         logger.info(f"✅ Faster Whisper model '{model_size}' loaded successfully")
