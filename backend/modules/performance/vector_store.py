@@ -30,10 +30,32 @@ def get_embedding_model():
     
     if _embedding_model is None:
         try:
+            import os
             from sentence_transformers import SentenceTransformer
             logger.info("Loading sentence-transformers embedding model...")
-            # Using a lightweight but effective model
-            _embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+            # Skip HuggingFace network check — the model is already cached
+            # locally. Without this, sentence-transformers contacts HuggingFace
+            # to check for updates, which hangs for 85+ seconds when the
+            # servers are slow or unreachable.
+            os.environ["HF_HUB_OFFLINE"] = "1"
+
+            try:
+                # Using a lightweight but effective model — forced to CPU because
+                # the GPU (if any) may have limited VRAM and is not needed for
+                # a 22MB embedding model. This also avoids CUDA conflicts with
+                # CTranslate2 (Whisper) which manages CUDA separately.
+                _embedding_model = SentenceTransformer(
+                    'all-MiniLM-L6-v2', device='cpu', local_files_only=True
+                )
+            except OSError:
+                # Model not cached yet — download it (one-time)
+                logger.info("📥 Embedding model not cached — downloading from HuggingFace (one-time)...")
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                _embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+
+            # Restore so other HF components aren't affected
+            os.environ.pop("HF_HUB_OFFLINE", None)
             logger.info("✅ Embedding model loaded successfully")
         except ImportError as e:
             _embedding_model_error = e

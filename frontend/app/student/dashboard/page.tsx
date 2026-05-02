@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth, UserRole } from "@/context/AuthContext";
 import Link from 'next/link';
+import ReactMarkdown from 'react-markdown';
 import {
   BookOpen,
   Sparkles,
@@ -19,23 +20,36 @@ import {
   CheckCircle2,
   AlertCircle,
   Brain,
-  Bell
+  Bell,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 import { useQuiz } from "@/context/QuizContext";
 
 // API Configuration
 const API_BASE_URL = "http://localhost:8000";
 
-// Simple markdown renderer for bold text
-const renderMarkdown = (text: string) => {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, index) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={index} className="font-semibold text-white">{part.slice(2, -2)}</strong>;
-    }
-    return part;
-  });
-};
+// Styled markdown renderer for dark theme
+const MarkdownContent = ({ children }: { children: string }) => (
+  <ReactMarkdown
+    components={{
+      h1: ({ children }) => <h1 className="text-xl font-bold text-white mt-4 mb-2">{children}</h1>,
+      h2: ({ children }) => <h2 className="text-lg font-bold text-white mt-4 mb-2">{children}</h2>,
+      h3: ({ children }) => <h3 className="text-base font-semibold text-purple-300 mt-3 mb-1">{children}</h3>,
+      h4: ({ children }) => <h4 className="text-sm font-semibold text-blue-300 mt-2 mb-1">{children}</h4>,
+      p: ({ children }) => <p className="mb-2 leading-relaxed">{children}</p>,
+      strong: ({ children }) => <strong className="font-semibold text-white">{children}</strong>,
+      ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
+      ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
+      li: ({ children }) => <li className="text-gray-300">{children}</li>,
+      hr: () => <hr className="border-gray-600 my-3" />,
+    }}
+  >
+    {children}
+  </ReactMarkdown>
+);
+
+
 
 interface Message {
   role: 'user' | 'assistant';
@@ -49,12 +63,39 @@ export default function StudentDashboard() {
 
   // AI Assistant State
   const [summary, setSummary] = useState('');
+  const [summaryType, setSummaryType] = useState<'quick' | 'advanced'>('advanced');
   const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isAskLoading, setIsAskLoading] = useState(false);
   const [contentCount, setContentCount] = useState<number | null>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const summaryAbortRef = useRef<AbortController | null>(null);
+  const askAbortRef = useRef<AbortController | null>(null);
+  const [splitPercent, setSplitPercent] = useState(60);
+  const isDraggingRef = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Drag handler for the split divider
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const percent = ((e.clientX - rect.left) / rect.width) * 100;
+      setSplitPercent(Math.max(30, Math.min(75, percent)));
+    };
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   // ===== QUIZ STATE =====
   const {
@@ -102,8 +143,13 @@ export default function StudentDashboard() {
     setIsSummaryLoading(true);
     setSummary('');
 
+    const abortController = new AbortController();
+    summaryAbortRef.current = abortController;
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/performance/summary`);
+      const response = await fetch(`${API_BASE_URL}/api/performance/summary?type=${summaryType}`, {
+        signal: abortController.signal,
+      });
 
       if (!response.ok) {
         const error = await response.json();
@@ -141,11 +187,20 @@ export default function StudentDashboard() {
           }
         }
       }
-    } catch {
-      setSummary('Error: Failed to connect to server. Is the backend running?');
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        // User clicked stop — keep whatever was generated so far
+      } else {
+        setSummary('Error: Failed to connect to server. Is the backend running?');
+      }
     } finally {
       setIsSummaryLoading(false);
+      summaryAbortRef.current = null;
     }
+  };
+
+  const stopSummary = () => {
+    summaryAbortRef.current?.abort();
   };
 
   const askQuestion = async () => {
@@ -157,11 +212,15 @@ export default function StudentDashboard() {
     setIsAskLoading(true);
     setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
 
+    const abortController = new AbortController();
+    askAbortRef.current = abortController;
+
     try {
       const response = await fetch(`${API_BASE_URL}/api/performance/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: userMessage }),
+        signal: abortController.signal,
       });
 
       if (!response.ok) {
@@ -215,14 +274,17 @@ export default function StudentDashboard() {
           }
         }
       }
-    } catch {
-      setMessages(prev => {
-        const newMessages = [...prev];
-        newMessages[newMessages.length - 1] = { role: 'assistant', content: 'Error: Failed to connect to server' };
-        return newMessages;
-      });
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          newMessages[newMessages.length - 1] = { role: 'assistant', content: 'Error: Failed to connect to server' };
+          return newMessages;
+        });
+      }
     } finally {
       setIsAskLoading(false);
+      askAbortRef.current = null;
     }
   };
 
@@ -261,29 +323,48 @@ export default function StudentDashboard() {
               </div>
 
               <div className="p-6">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div ref={containerRef} className="flex gap-0 h-[700px]">
                   {/* Summary Section */}
-                  <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+                  <div style={{ width: `${splitPercent}%` }} className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden flex flex-col">
                     <div className="p-4 border-b border-gray-700 bg-gray-800/50 flex items-center justify-between">
                       <h3 className="font-semibold flex items-center gap-2">
                         <BookOpen size={18} className="text-purple-400" />
                         Lecture Summary
                       </h3>
-                      <button
-                        onClick={generateSummary}
-                        disabled={isSummaryLoading}
-                        className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-                      >
-                        {isSummaryLoading ? (
-                          <><Loader2 size={16} className="animate-spin" />Generating...</>
-                        ) : (
-                          <><RefreshCw size={16} />Get Summary</>
+                      <div className="flex gap-2">
+                        <select
+                          value={summaryType}
+                          onChange={(e) => setSummaryType(e.target.value as 'quick' | 'advanced')}
+                          disabled={isSummaryLoading}
+                          className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-purple-500 focus:border-purple-500 block p-2"
+                        >
+                          <option value="quick">Quick Summary</option>
+                          <option value="advanced">Detailed Summary</option>
+                        </select>
+                        {isSummaryLoading && (
+                          <button
+                            onClick={stopSummary}
+                            className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
+                          >
+                            <X size={16} />Stop
+                          </button>
                         )}
-                      </button>
+                        <button
+                          onClick={generateSummary}
+                          disabled={isSummaryLoading}
+                          className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
+                        >
+                          {isSummaryLoading ? (
+                            <><Loader2 size={16} className="animate-spin" />Generating...</>
+                          ) : (
+                            <><RefreshCw size={16} />Get Summary</>
+                          )}
+                        </button>
+                      </div>
                     </div>
-                    <div className="p-4 h-[400px] overflow-y-auto">
+                    <div className="p-4 flex-1 overflow-y-auto">
                       {summary ? (
-                        <div className="text-gray-300 leading-relaxed whitespace-pre-wrap">{renderMarkdown(summary)}</div>
+                        <div className="text-gray-300 leading-relaxed"><MarkdownContent>{summary}</MarkdownContent></div>
                       ) : (
                         <div className="h-full flex flex-col items-center justify-center text-gray-500">
                           <BookOpen size={48} className="mb-4 opacity-30" />
@@ -293,8 +374,20 @@ export default function StudentDashboard() {
                     </div>
                   </div>
 
+                  {/* Draggable Divider */}
+                  <div
+                    className="w-3 flex-shrink-0 flex items-center justify-center cursor-col-resize group hover:bg-gray-600/30 transition-colors rounded"
+                    onMouseDown={() => {
+                      isDraggingRef.current = true;
+                      document.body.style.cursor = 'col-resize';
+                      document.body.style.userSelect = 'none';
+                    }}
+                  >
+                    <div className="w-1 h-12 bg-gray-600 rounded-full group-hover:bg-purple-400 transition-colors" />
+                  </div>
+
                   {/* Chat Section */}
-                  <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+                  <div style={{ width: `${100 - splitPercent}%` }} className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden flex flex-col">
                     <div className="p-4 border-b border-gray-700 bg-gray-800/50">
                       <h3 className="font-semibold flex items-center gap-2">
                         <MessageCircle size={18} className="text-blue-400" />
@@ -303,7 +396,7 @@ export default function StudentDashboard() {
                     </div>
 
                     {/* Messages */}
-                    <div ref={chatContainerRef} className="p-4 h-[320px] overflow-y-auto space-y-4">
+                    <div ref={chatContainerRef} className="p-4 flex-1 overflow-y-auto space-y-4">
                       {messages.length === 0 ? (
                         <div className="h-full flex flex-col items-center justify-center text-gray-500">
                           <MessageCircle size={40} className="mb-3 opacity-30" />
@@ -319,7 +412,7 @@ export default function StudentDashboard() {
                             )}
                             <div className={`max-w-[80%] rounded-2xl px-4 py-2 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-200'}`}>
                               <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                                {msg.content ? renderMarkdown(msg.content) : <Loader2 size={16} className="animate-spin" />}
+                                {msg.content ? <MarkdownContent>{msg.content}</MarkdownContent> : <Loader2 size={16} className="animate-spin" />}
                               </div>
                             </div>
                             {msg.role === 'user' && (
@@ -344,13 +437,22 @@ export default function StudentDashboard() {
                           className="flex-1 px-4 py-3 rounded-xl bg-gray-700 border border-gray-600 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                           disabled={isAskLoading}
                         />
-                        <button
-                          onClick={askQuestion}
-                          disabled={!inputMessage.trim() || isAskLoading}
-                          className="px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {isAskLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
-                        </button>
+                        {isAskLoading ? (
+                          <button
+                            onClick={() => askAbortRef.current?.abort()}
+                            className="px-4 py-3 bg-red-600 text-white rounded-xl hover:bg-red-700 transition-colors"
+                          >
+                            <X size={20} />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={askQuestion}
+                            disabled={!inputMessage.trim()}
+                            className="px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Send size={20} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

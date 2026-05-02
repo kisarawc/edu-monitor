@@ -254,36 +254,53 @@ def chat_streaming(
 
 
 # RAG Prompt Templates
-SUMMARY_SYSTEM_PROMPT = """You are an educational assistant that creates clear, concise summaries of lecture content.
-Your summaries should:
-- Highlight key concepts and main ideas
-- Be well-organized with clear structure
+SUMMARY_SYSTEM_PROMPT = """You are an educational assistant that creates clear, structured summaries of lecture content.
+You receive TWO types of content:
+1. LECTURE SLIDES — the official slide material
+2. LIVE LECTURE SPEECH — what the teacher actually said during the lecture (transcribed)
+
+Your summaries MUST:
+- Cover key concepts from BOTH the slides AND the live speech
+- Highlight important points the teacher mentioned verbally that are NOT in the slides (these are often the most valuable for students who missed part of the lecture)
+- Be well-organized with clear headings
 - Use simple language accessible to students
-- Include important definitions and examples mentioned"""
+- ONLY include information from the provided content — do NOT add external knowledge"""
 
-SUMMARY_PROMPT_TEMPLATE = """Based on the following lecture content, provide a comprehensive summary for students:
+SUMMARY_PROMPT_TEMPLATE = """Based on the following lecture content, provide a comprehensive summary for students.
+Pay special attention to things the teacher said in the live speech that go beyond what's in the slides — students need to catch those details.
 
-LECTURE CONTENT:
 {context}
 
-Please provide a well-structured summary covering the main topics and key points."""
+Please provide a well-structured summary with these sections:
+1. **Key Concepts** — main topics and definitions from slides and lecture
+2. **Important Details from Lecture** — things the teacher explained verbally (examples, clarifications, tips)
+3. **Key Takeaways** — the most important points students should remember"""
 
-QA_SYSTEM_PROMPT = """You are an expert teaching assistant helping students learn from a lecture.
-Your primary job is to answer the student's question by extracting information directly from the provided lecture transcript.
-You must focus heavily on the provided text. Only use outside knowledge to explain or clarify what was said in the transcript.
-If the answer cannot be deduced from the transcript, politely state that it was not covered in the lecture."""
+QUICK_SUMMARY_PROMPT_TEMPLATE = """Based on the following lecture content, provide a QUICK, high-level overview for students.
+Keep it brief and focus only on the core message.
 
-QA_PROMPT_TEMPLATE = """Use the following lecture transcript to answer the student's question. Focus closely on what the teacher actually said.
-If you need to use outside knowledge to explain a concept from the transcript, clearly relate it back to the transcript.
-If the answer is completely missing from the transcript, acknowledge that before optionally providing general guidance.
-
---- LECTURE TRANSCRIPT ---
 {context}
---------------------------
 
-STUDENT QUESTION: {question}
+Please provide a short summary with:
+- A 2-3 sentence overview of the lecture
+- A bulleted list of the 3-5 most important points covered (from slides or speech)"""
 
-Please provide a helpful, educational answer:"""
+QA_SYSTEM_PROMPT = """You are a lecture assistant. Give SHORT, DIRECT answers only.
+
+STRICT RULES:
+- Answer in 2-4 sentences maximum
+- Do NOT explain your reasoning or thinking process
+- Do NOT say "Let's analyze" or "Step by step" — just give the answer
+- ONLY use information from the provided lecture content
+- If the answer is NOT in the content, say "This was not covered in the lecture."
+- Do NOT add information from outside the lecture content"""
+
+QA_PROMPT_TEMPLATE = """LECTURE CONTENT:
+{context}
+
+QUESTION: {question}
+
+Give a SHORT, DIRECT answer (2-4 sentences max) using ONLY the lecture content above. No analysis, no reasoning — just the answer."""
 
 FILTER_SYSTEM_PROMPT = """You are a transcript processor. Your job is to:
 1. Remove filler words (um, uh, like, you know, so, basically, etc.)
@@ -300,13 +317,19 @@ RAW TRANSCRIPT:
 CLEANED CONTENT:"""
 
 
-def generate_summary(context: str, model: str = DEFAULT_MODEL) -> Generator[str, None, None]:
+def generate_summary(context: str, summary_type: str = "advanced", model: str = DEFAULT_MODEL) -> Generator[str, None, None]:
     """Generate a streaming summary of lecture content."""
     if not is_ollama_available():
         yield "[Summary generation requires Ollama LLM. Please install and run Ollama.]"
         return
-    prompt = SUMMARY_PROMPT_TEMPLATE.format(context=context)
-    yield from generate_streaming(prompt, model, SUMMARY_SYSTEM_PROMPT, temperature=0.5)
+        
+    if summary_type == "quick":
+        prompt = QUICK_SUMMARY_PROMPT_TEMPLATE.format(context=context)
+        # Lower max_tokens for quicker generation
+        yield from generate_streaming(prompt, model, SUMMARY_SYSTEM_PROMPT, temperature=0.3, max_tokens=600)
+    else:
+        prompt = SUMMARY_PROMPT_TEMPLATE.format(context=context)
+        yield from generate_streaming(prompt, model, SUMMARY_SYSTEM_PROMPT, temperature=0.5)
 
 
 def answer_question(context: str, question: str, model: str = DEFAULT_MODEL) -> Generator[str, None, None]:
@@ -315,7 +338,7 @@ def answer_question(context: str, question: str, model: str = DEFAULT_MODEL) -> 
         yield "[Q&A requires Ollama LLM. Please install and run Ollama to use this feature.]"
         return
     prompt = QA_PROMPT_TEMPLATE.format(context=context, question=question)
-    yield from generate_streaming(prompt, model, QA_SYSTEM_PROMPT, temperature=0.3)
+    yield from generate_streaming(prompt, model, QA_SYSTEM_PROMPT, temperature=0.1, max_tokens=512)
 
 
 def filter_transcript(raw_transcript: str, model: str = DEFAULT_MODEL) -> str:

@@ -65,6 +65,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
+# Buffer to accumulate transcript text before storing in vector DB
+# Stores context-rich paragraphs (≥200 chars) instead of tiny fragments
+_transcript_buffer: list = []
+
 
 class TranscriptRequest(BaseModel):
     """Request body for transcript submission."""
@@ -256,9 +260,10 @@ async def submit_transcript(request: TranscriptRequest):
 
 
 @router.get("/summary")
-async def get_summary():
+async def get_summary(type: str = "advanced"):
     """
     Generate a summary of all stored lecture content.
+    Accepts 'type' parameter ('quick' or 'advanced') to adjust detail level.
     Returns a streaming response as the LLM generates the summary.
     REQUIRES Ollama to be running.
     """
@@ -296,16 +301,33 @@ async def get_summary():
             media_type="text/event-stream"
         )
     
-    # Combine content for context (extracting the 'text' field from each dict)
-    context_chunks = [item.get("text", "") if isinstance(item, dict) else str(item) for item in all_content[:20]]
-    context = "\n\n---\n\n".join(context_chunks)  # Limit context size
+    # Combine content for context — label by source so LLM can distinguish
+    slide_chunks = []
+    transcript_chunks = []
+    for item in all_content[:30]:
+        text = item.get("text", "") if isinstance(item, dict) else str(item)
+        source = item.get("source", "unknown") if isinstance(item, dict) else "unknown"
+        if not text.strip():
+            continue
+        if source == "slides":
+            slide_chunks.append(text)
+        else:
+            transcript_chunks.append(text)
+    
+    context_parts = []
+    if slide_chunks:
+        context_parts.append("=== FROM LECTURE SLIDES ===\n" + "\n\n".join(slide_chunks))
+    if transcript_chunks:
+        context_parts.append("=== FROM LIVE LECTURE SPEECH (what the teacher actually said) ===\n" + "\n\n".join(transcript_chunks))
+    
+    context = "\n\n".join(context_parts) if context_parts else ""
 
-    logger.info(f"Generating summary for {len(all_content)} content chunks")
+    logger.info(f"Generating summary: {len(slide_chunks)} slide chunks, {len(transcript_chunks)} transcript chunks")
     
     # Stream the summary
     def generate():
         try:
-            for chunk in generate_summary(context):
+            for chunk in generate_summary(context, summary_type=type):
                 yield f"data: {json.dumps({'text': chunk})}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -363,9 +385,13 @@ async def ask_question(request: QuestionRequest):
             media_type="text/event-stream"
         )
     
-    # Build context from search results
-    context_parts = [doc for doc, dist, meta in search_results]
-    context = "\n\n---\n\n".join(context_parts)
+    # Build context from search results — label by source
+    labeled_parts = []
+    for doc, dist, meta in search_results:
+        source = meta.get("source", "unknown") if meta else "unknown"
+        label = "[From Slides]" if source == "slides" else "[From Live Lecture Speech]"
+        labeled_parts.append(f"{label}\n{doc}")
+    context = "\n\n---\n\n".join(labeled_parts)
     
     logger.info(f"Answering question with {len(search_results)} context chunks")
     
@@ -448,8 +474,9 @@ async def clear_content():
 async def transcribe_audio_chunk(file: UploadFile = File(...)):
     """
     Transcribe an audio chunk using local Faster Whisper.
-    Accepts audio file (WAV, WebM, etc.), transcribes it, stores in vector DB,
-    and returns the transcript text.
+    Accumulates transcript text and stores to vector DB once a meaningful
+    paragraph is built (≥200 chars). This ensures the Q&A system gets
+    context-rich chunks rather than tiny sentence fragments.
     """
     try:
         audio_bytes = await file.read()
@@ -479,25 +506,60 @@ async def transcribe_audio_chunk(file: UploadFile = File(...)):
                 data={"transcript": "", "chunks_stored": 0}
             )
 
-        # We intentionally DO NOT save the transcript to the vector DB here!
-        # The frontend handles saving it by calling the `/transcript` endpoint
-        # if the teacher has the "Auto-Save" toggle enabled.
+        # Accumulate transcript text — only store when we have enough context
+        _transcript_buffer.append(transcript)
+        accumulated = " ".join(_transcript_buffer)
+        chunks_stored = 0
 
-        logger.info(f"Transcribed successfully: {len(transcript)} chars (NOT automatically saved)")
+        if len(accumulated) >= 200:
+            # Enough context — store this accumulated segment in vector DB
+            num_stored = add_documents(
+                texts=[accumulated],
+                source="transcript",
+                metadata={"type": "live_speech", "method": "whisper_local", "raw": True}
+            )
+            chunks_stored = num_stored
+            logger.info(f"Stored accumulated transcript: {len(accumulated)} chars, {num_stored} chunks")
+            _transcript_buffer.clear()
+        else:
+            logger.info(f"Buffered transcript ({len(accumulated)} chars, waiting for ≥200)")
 
         return StatusResponse(
             success=True,
             message="Transcribed successfully",
             data={
                 "transcript": transcript,
-                "chunks_stored": 0,
+                "chunks_stored": chunks_stored,
                 "audio_size": len(audio_bytes),
+                "buffer_size": len(accumulated) if chunks_stored == 0 else 0,
             }
         )
 
     except Exception as e:
         logger.error(f"Audio transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+
+@router.post("/transcribe-audio/flush")
+async def flush_transcript_buffer():
+    """Flush any remaining buffered transcript text to the vector DB."""
+    accumulated = " ".join(_transcript_buffer)
+    if not accumulated.strip():
+        return StatusResponse(success=True, message="Buffer empty, nothing to flush")
+
+    num_stored = add_documents(
+        texts=[accumulated],
+        source="transcript",
+        metadata={"type": "live_speech", "method": "whisper_local", "raw": True}
+    )
+    logger.info(f"Flushed transcript buffer: {len(accumulated)} chars, {num_stored} chunks")
+    _transcript_buffer.clear()
+
+    return StatusResponse(
+        success=True,
+        message=f"Flushed and stored {num_stored} chunks",
+        data={"transcript": accumulated, "chunks_stored": num_stored}
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
