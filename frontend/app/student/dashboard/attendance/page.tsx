@@ -155,12 +155,14 @@ export default function StudentAttendancePage() {
     try {
       if (!user?.id) {
         showNotification('error', 'User authentication required. Please log in again.');
+        setShowPermissionModal(false);
         return;
       }
 
       const token = localStorage.getItem("token");
       if (!token) {
         showNotification('error', 'Authentication token not found. Please log in again.');
+        setShowPermissionModal(false);
         return;
       }
 
@@ -171,17 +173,20 @@ export default function StudentAttendancePage() {
 
         if (!profileCheckResponse.ok) {
           showNotification('error', 'Profile picture not found. Please upload a profile picture in your account settings before using face verification.');
+          setShowPermissionModal(false);
           return;
         }
       } catch (err) {
         showNotification('error', 'Unable to verify profile picture. Please ensure you have uploaded a profile picture.');
+        setShowPermissionModal(false);
         return;
       }
 
       if (typeof window !== 'undefined') {
-        const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost';
+        const isSecure = window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
         if (!isSecure) {
           showNotification('error', 'Camera access requires a secure HTTPS connection. Please use a secure connection to enable face verification.');
+          setShowPermissionModal(false);
           return;
         }
       }
