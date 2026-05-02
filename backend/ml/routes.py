@@ -34,7 +34,7 @@ async def ml_overview(
         force (bool): Force model retrain if True
     """
     try:
-        result = get_overall_insights(db, force_retrain=force, teacher_id=current_user.id)
+        result = get_overall_insights(db, force_retrain=force)
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ML analysis failed: {str(e)}")
@@ -56,7 +56,7 @@ async def ml_module_insights(
         raise HTTPException(status_code=400, detail="module_code is required")
 
     try:
-        result = get_module_insights(db, module_code.strip(), teacher_id=current_user.id)
+        result = get_module_insights(db, module_code.strip())
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ML analysis failed: {str(e)}")
@@ -92,7 +92,7 @@ async def ml_retrain(
     """
     force_retrain()
     # Immediately train fresh
-    result = get_overall_insights(db, force_retrain=True, teacher_id=current_user.id)
+    result = get_overall_insights(db, force_retrain=True)
     return {
         "message": "Model retrained successfully",
         "result": result,

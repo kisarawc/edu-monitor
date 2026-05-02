@@ -149,18 +149,12 @@ export default function MLInsightsPage() {
             const data: OverviewData = await res.json();
             setOverview(data);
 
-            // Extract modules from teacher sessions for the filter
-            try {
-                const sessRes = await fetch(`${API}/api/attendance/teacher/sessions`, {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
-                if (sessRes.ok) {
-                    const sessions = await sessRes.json();
-                    const modules = [...new Set(sessions.map((s: any) => s.module_code))] as string[];
-                    setAvailableModules(modules);
-                }
-            } catch {
-                /* ignore */
+            // Extract modules from the analyzed dataset for the filter
+            if (data.module_attendance && data.module_attendance.length > 0) {
+                const modules = data.module_attendance.map((m: any) => m.module_code);
+                setAvailableModules(modules);
+            } else {
+                setAvailableModules([]);
             }
         } catch (err: any) {
             setError(err.message || "Failed to load ML insights");
