@@ -12,7 +12,6 @@ import {
     Trash2,
     Send,
     GraduationCap,
-    ClipboardPaste,
     Clock,
     Zap,
     HelpCircle,
@@ -69,10 +68,6 @@ export default function StudentPerformanceSection() {
     const [autoSubmitCount, setAutoSubmitCount] = useState(0);
     const pendingTranscriptRef = useRef('');
     const autoSubmitTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-    // Demo paste state
-    const [pasteText, setPasteText] = useState('');
-    const [pasteStatus, setPasteStatus] = useState<TranscriptStatus>({ status: 'idle', message: '' });
 
     // Stats
     const [contentStats, setContentStats] = useState<{ document_count: number } | null>(null);
@@ -556,32 +551,6 @@ export default function StudentPerformanceSection() {
         }
     };
 
-    // Demo paste handlers
-    const submitPasteText = async () => {
-        if (!pasteText.trim()) return;
-        setPasteStatus({ status: 'processing', message: 'Processing pasted transcript...' });
-
-        try {
-            const response = await fetch(`${API_BASE_URL}/api/performance/transcript`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ transcript: pasteText, use_llm_filter: true }),
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.success) {
-                setPasteStatus({ status: 'success', message: `Stored ${data.data?.chunks_stored || 1} content chunks` });
-                setPasteText('');
-                fetchStats();
-            } else {
-                setPasteStatus({ status: 'error', message: data.detail || data.message || 'Processing failed' });
-            }
-        } catch (error) {
-            setPasteStatus({ status: 'error', message: 'Failed to connect to server' });
-        }
-    };
-
     const clearContent = async () => {
         if (!confirm('Are you sure you want to clear all stored content?')) return;
         try {
@@ -781,54 +750,10 @@ export default function StudentPerformanceSection() {
                                 </div>
                             </div>
 
-                            {/* Demo Paste Section */}
-                            <div className="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
-                                <div className="p-4 border-b border-gray-700 bg-gray-900/50">
-                                    <h3 className="font-semibold flex items-center gap-2">
-                                        <ClipboardPaste size={18} className="text-orange-400" />
-                                        Paste Transcript 
-                                    </h3>
-                                    <p className="text-xs text-gray-500 mt-1">Paste lecture transcript text directly for testing without recording</p>
-                                </div>
-                                <div className="p-6">
-                                    <textarea
-                                        value={pasteText}
-                                        onChange={(e) => setPasteText(e.target.value)}
-                                        placeholder="Paste your lecture transcript here for demo purposes...&#10;&#10;Example: Today we'll be discussing machine learning fundamentals. Machine learning is a subset of artificial intelligence that enables computers to learn from data without being explicitly programmed..."
-                                        className="w-full h-32 bg-gray-900 border border-gray-700 rounded-lg p-4 text-gray-200 text-sm resize-none focus:outline-none focus:border-orange-500/50 placeholder-gray-600"
-                                    />
-
-                                    <div className="mt-4 flex gap-3">
-                                        <button
-                                            onClick={submitPasteText}
-                                            disabled={!pasteText.trim() || pasteStatus.status === 'processing'}
-                                            className={`flex-1 py-2.5 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${pasteText.trim() && pasteStatus.status !== 'processing' ? 'bg-orange-600 text-white hover:bg-orange-700' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`}
-                                        >
-                                            {pasteStatus.status === 'processing' ? <><Loader2 size={16} className="animate-spin" />Processing...</> : <><Send size={16} />Submit Pasted Text</>}
-                                        </button>
-                                        <button
-                                            onClick={() => { setPasteText(''); setPasteStatus({ status: 'idle', message: '' }); }}
-                                            disabled={!pasteText.trim()}
-                                            className={`py-2.5 px-4 rounded-lg font-medium transition-all flex items-center justify-center gap-2 ${pasteText.trim() ? 'bg-gray-600 text-white hover:bg-gray-500' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`}
-                                        >
-                                            <Trash2 size={16} />
-                                            Clear
-                                        </button>
-                                    </div>
-
-                                    {pasteStatus.message && (
-                                        <div className={`mt-3 flex items-start gap-2 p-3 rounded-lg text-sm ${pasteStatus.status === 'success' ? 'bg-emerald-500/10 text-emerald-400' : pasteStatus.status === 'error' ? 'bg-red-500/10 text-red-400' : 'bg-blue-500/10 text-blue-400'}`}>
-                                            {pasteStatus.status === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                                            {pasteStatus.message}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-
                             {/* How it works */}
                             <div className="bg-gray-800 rounded-xl border border-gray-700 p-6">
                                 <h3 className="font-semibold text-white mb-4">How it works</h3>
-                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                     <div className="flex gap-3">
                                         <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 font-bold shrink-0">1</div>
                                         <div>
@@ -844,14 +769,7 @@ export default function StudentPerformanceSection() {
                                         </div>
                                     </div>
                                     <div className="flex gap-3">
-                                        <div className="w-8 h-8 rounded-full bg-orange-500/20 flex items-center justify-center text-orange-400 font-bold shrink-0">3</div>
-                                        <div>
-                                            <h4 className="font-medium text-white text-sm">Or Paste Text</h4>
-                                            <p className="text-xs text-gray-500">For demos without mic</p>
-                                        </div>
-                                    </div>
-                                    <div className="flex gap-3">
-                                        <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold shrink-0">4</div>
+                                        <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold shrink-0">3</div>
                                         <div>
                                             <h4 className="font-medium text-white text-sm">Student Access</h4>
                                             <p className="text-xs text-gray-500">AI summaries & Q&A ready</p>
@@ -1403,7 +1321,7 @@ export default function StudentPerformanceSection() {
                                                             outerRadius={80}
                                                             fill="#8884d8"
                                                             dataKey="value"
-                                                            label={({ name, percent }) => percent > 0 ? `${name} ${(percent * 100).toFixed(0)}%` : ''}
+                                                            label={({ name, percent }) => (percent !== undefined && percent > 0) ? `${name} ${(percent * 100).toFixed(0)}%` : ''}
                                                         >
                                                             <Cell fill="#34d399" />
                                                             <Cell fill="#f87171" />

@@ -307,10 +307,10 @@ export default function StudentBehaviorPage() {
             mid_decisive_total: getDecisiveTotal(d.mid_total ?? 0, d.mid_context ?? 0, d.mid_decisive_total),
             back_context: d.back_context ?? 0,
             back_decisive_total: getDecisiveTotal(d.back_total ?? 0, d.back_context ?? 0, d.back_decisive_total),
-            front_total: d.front_total,
-            mid_total: d.mid_total,
-            back_total: d.back_total,
-            total: d.total
+            front_total: d.front_total ?? 0,
+            mid_total: d.mid_total ?? 0,
+            back_total: d.back_total ?? 0,
+            total: d.total ?? 0
           }));
           setHistoryData(formatted);
         })
