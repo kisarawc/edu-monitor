@@ -17,18 +17,55 @@ WINDOW_SEC = 3
 WINDOW_FRAMES = FPS * WINDOW_SEC
 SKIP_POSE_FRAMES = 20
 FRAME_STRIDE = 4  
+SLEEP_FRAMES_THRESHOLD = 15
+AWAY_FRAMES_THRESHOLD = 18
+AWAY_PROB_THRESHOLD = 0.55
+AWAY_EYE_DISTANCE_MAX = 0.12
+ENABLE_CONTEXT_STATE = False
 
 # Global stats shared with API
-LATEST_STATS = {"total": 0, "engaged": 0, "active": 0}
+LATEST_STATS = {
+    "total": 0,
+    "engaged": 0,
+    "off_task": 0,
+    "context_dependent": 0,
+    "decisive_total": 0,
+    "active": 0
+}
 LATEST_GROUP_STATS = {
-    "Front Row": {"engaged": 0, "total": 0},
-    "Middle Row": {"engaged": 0, "total": 0},
-    "Back Row": {"engaged": 0, "total": 0}
+    "Front Row": {"engaged": 0, "off_task": 0, "context_dependent": 0, "decisive_total": 0, "total": 0},
+    "Middle Row": {"engaged": 0, "off_task": 0, "context_dependent": 0, "decisive_total": 0, "total": 0},
+    "Back Row": {"engaged": 0, "off_task": 0, "context_dependent": 0, "decisive_total": 0, "total": 0}
 }
 STATS_HISTORY = []
 VISUALIZE_GROUPS = False
 VISUAL_STYLE = "dots"  # Options: "dots", "boxes", "detailed"
 ZONE_SPLITS = {"back": 0.33, "front": 0.66}
+CLASS_ROI = {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0} # Relative to the 50% crop
+
+STATE_ON_TASK = "on_task"
+STATE_OFF_TASK = "off_task"
+STATE_CONTEXT = "context_dependent"
+
+STATE_COLORS = {
+    STATE_ON_TASK: (0, 255, 0),
+    STATE_OFF_TASK: (0, 0, 255),
+    STATE_CONTEXT: (0, 215, 255),
+}
+
+STATE_TEXT = {
+    STATE_ON_TASK: "On-Task",
+    STATE_OFF_TASK: "Clearly Off-Task",
+    STATE_CONTEXT: "Context-Dependent",
+}
+
+BEHAVIOR_TEXT = {
+    0: "Listening",
+    1: "Working",
+    2: "Hand Raised",
+    3: "Sleeping",
+    4: "Turned Away",
+}
 
 def set_group_visualization(enabled: bool):
     global VISUALIZE_GROUPS
@@ -45,6 +82,29 @@ def set_zone_boundaries(back_split: float, front_split: float):
     ZONE_SPLITS["back"] = back_split
     ZONE_SPLITS["front"] = front_split
     print(f"Zone boundaries updated: {ZONE_SPLITS}")
+
+def set_class_boundary(x1: float, y1: float, x2: float, y2: float):
+    global CLASS_ROI
+    CLASS_ROI["x1"] = min(x1, x2)
+    CLASS_ROI["y1"] = min(y1, y2)
+    CLASS_ROI["x2"] = max(x1, x2)
+    CLASS_ROI["y2"] = max(y1, y2)
+    print(f"Class boundary ROI updated: {CLASS_ROI}")
+
+
+def get_engagement_state(label):
+    if label in [0, 1, 2]:
+        return STATE_ON_TASK
+    if label == 3:
+        return STATE_OFF_TASK
+    if label == 4:
+        return STATE_CONTEXT if ENABLE_CONTEXT_STATE else STATE_OFF_TASK
+    return None
+
+
+def get_behavior_text(label):
+    return BEHAVIOR_TEXT.get(label, "Unknown")
+
 
 
 import math
@@ -157,9 +217,22 @@ def run_inference(video_path=None, show_video=False):
     engagement_state = {}
     pose_cache = {}
 
-    LATEST_STATS.update({"total": 0, "engaged": 0, "active": 0})
+    LATEST_STATS.update({
+        "total": 0,
+        "engaged": 0,
+        "off_task": 0,
+        "context_dependent": 0,
+        "decisive_total": 0,
+        "active": 0
+    })
     for key in LATEST_GROUP_STATS:
-        LATEST_GROUP_STATS[key] = {"engaged": 0, "total": 0}
+        LATEST_GROUP_STATS[key] = {
+            "engaged": 0,
+            "off_task": 0,
+            "context_dependent": 0,
+            "decisive_total": 0,
+            "total": 0
+        }
 
     # ─── Background Inference Thread ──────────────────────────────
     def inference_worker():
@@ -216,7 +289,17 @@ def run_inference(video_path=None, show_video=False):
                 batch_boxes = []
 
                 for i, (x1, y1, x2, y2) in enumerate(boxes):
+                    # ROI Filtering: Only process detections within the defined class boundary
+                    # Coordinates are relative to the 50% crop
+                    cx = (x1 + x2) / 2.0 / w
+                    cy = (y1 + y2) / 2.0 / h
+                    
+                    if not (CLASS_ROI["x1"] <= cx <= CLASS_ROI["x2"] and 
+                            CLASS_ROI["y1"] <= cy <= CLASS_ROI["y2"]):
+                        continue
+
                     tid = ids[i]
+
                     x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
                     
                     bbox_width = x2 - x1
@@ -293,57 +376,50 @@ def run_inference(video_path=None, show_video=False):
                                  'head_drop', 'shoulder_tilt', 'wrist_to_nose', 'wrist_distance', 'eye_distance']
                     )
                     try:
-                        # Model classes are [0, 1, 3, 4]. Probs index mapping: 0->0, 1->1, 2->3, 3->4
+                        # The deployed classifier returns class probabilities for the behavior labels.
                         all_probs = clf.predict_proba(X_in) 
                         
                         for i, tid in enumerate(batch_tids):
-                            current_probs = all_probs[i] # array of 4 probabilities
+                            current_probs = all_probs[i]
                             
-                            # Probabilities for specific classes:
-                            # Index 0: Listening (0), Index 1: Working (1), Index 2: Sleeping (3), Index 3: Turned Away (4)
-                            p0, p1, p3, p4 = current_probs[0], current_probs[1], current_probs[2], current_probs[3]
-                            p2 = 0.0 # Hand Raised (not in local training set)
-                            
-                            on_task_prob = p0 + p1 + p2
-                            off_task_prob = p3 + p4
+                            # Probabilities for specific classes: 
+                            # 0: Listening, 1: Working, 2: Hand Raised, 3: Sleeping, 4: Turned Away
+                            p0, p1, p2, p3, p4 = current_probs[0], current_probs[1], current_probs[2], current_probs[3], current_probs[4]
                             
                             # 2. Hand Raised Exception (Explicit heuristic check)
                             current_feat = batch_features[i]
                             wrist_elev = current_feat[2] # max_wrist_elevation
+                            eye_distance = current_feat[8]
                             is_hand_raised = (wrist_elev > 0.10) 
                             
                             # 3. Determine framing label for this frame
                             if is_hand_raised:
                                 frame_label = 2 # Hand Raised
-                            elif off_task_prob > 0.75: # Strict threshold (0.75) for Off-Task
-                                frame_label = 3 if p3 > p4 else 4
                             else:
-                                frame_label = 0 if p0 > p1 else 1
+                                raw_pred = int(np.argmax(current_probs))
+                                frame_label = raw_pred # 1:1 mapping now (0, 1, 2, 3, 4)
                                 
-                            # 4. Smoothing and Hysteresis
-                            last_label, _ = engagement_state.get(tid, (0, 0.0))
-                            was_on_task = last_label in [0, 1, 2]
-                            
-                            # If they were previously On-Task, stay On-Task unless off-task is VERY certain
-                            if was_on_task and off_task_prob < 0.85:
-                                frame_label = last_label if frame_label in [3, 4] else frame_label
-
+                            # 4. Temporal Filter (60% Off-Task Threshold)
                             prediction_history[tid].append(frame_label)
                             
-                            # Final decision based on majority vote
                             counts = np.bincount(prediction_history[tid], minlength=5)
-                            final_pred = np.argmax(counts)
                             
-                            # 5. Temporal Filter: "Confirmed Off-Task"
-                            # We only show Off-Task if the student HAS been Off-Task for at least 2 consecutive seconds
-                            # (2 seconds / 0.1s update freq = 20 frames)
-                            is_currently_off_task = final_pred in [3, 4]
-                            history_list = list(prediction_history[tid])
-                            recent_off_task = all(l in [3, 4] for l in history_list[-20:]) # 2 seconds confirmation
-                            
-                            if is_currently_off_task and not recent_off_task:
-                                # Keep showing previous on-task label until confirmed
-                                final_pred = last_label if was_on_task else 0 
+                            # Make "turned away" stricter than sleeping so mild side-looking does not
+                            # immediately become a yellow context label during the presentation.
+                            strong_away_evidence = (
+                                counts[4] >= AWAY_FRAMES_THRESHOLD and
+                                p4 >= AWAY_PROB_THRESHOLD and
+                                eye_distance <= AWAY_EYE_DISTANCE_MAX
+                            )
+
+                            if counts[3] >= SLEEP_FRAMES_THRESHOLD:
+                                final_pred = 3
+                            elif strong_away_evidence:
+                                final_pred = 4
+                            else:
+                                # Default to On-Task majority if not enough off-task frames
+                                final_pred = 0 if counts[0] > counts[1] else 1
+
 
                             engagement_state[tid] = (final_pred, float(np.max(current_probs)))
 
@@ -355,23 +431,26 @@ def run_inference(video_path=None, show_video=False):
                 # Prepare Visualization Data
                 for (x1, y1, x2, y2, tid) in batch_boxes:
                     label, score = engagement_state.get(tid, (None, 0.0))
-                    on_task = label in [0, 1, 2]
-                    if label is not None:
-                        if on_task:
-                            color = (0, 255, 0)
-                            text = f"On-Task ({score:.2f})"
+                    color = (0, 255, 255)
+                    text = ""
+                    state = get_engagement_state(label)
+                    if state is not None:
+                        color = STATE_COLORS[state]
+                        behavior_text = get_behavior_text(label)
+                        if state == STATE_OFF_TASK:
+                            text = ""
+                        elif state == STATE_CONTEXT:
+                            text = ""
                         else:
-                            color = (0, 0, 255)
-                            text = f"Off-Task ({score:.2f})"
-                    else:
-                        color = (0, 255, 255)
-                        text = "Analyzing..."
+                            text = ""
                     if len(prediction_history[tid]) < 2:
-                        text = "Analyzing..."
+                        text = ""
                         color = (0, 255, 255)
+                        state = None
+
                     new_detections.append({
                         "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                        "color": color, "text": text
+                        "color": color, "text": text, "state": state
                     })
 
             # Update shared detections atomically
@@ -386,16 +465,26 @@ def run_inference(video_path=None, show_video=False):
                         del shared["detections_cache"][k]
 
             # Update global stats
-            on_task_count = sum(1 for d in new_detections if d["color"] == (0, 255, 0))
+            on_task_count = sum(1 for d in new_detections if d.get("state") == STATE_ON_TASK)
+            off_task_count = sum(1 for d in new_detections if d.get("state") == STATE_OFF_TASK)
+            context_count = sum(1 for d in new_detections if d.get("state") == STATE_CONTEXT)
+            decisive_total = on_task_count + off_task_count
             total_active = len(new_detections)
+            
+            # Behavior specific counts for historical tracking
+            behavior_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+            for tid, (label, score) in engagement_state.items():
+                if label in behavior_counts:
+                    behavior_counts[label] += 1
+
             group_counts = {
-                "Front Row": {"engaged": 0, "total": 0},
-                "Middle Row": {"engaged": 0, "total": 0},
-                "Back Row": {"engaged": 0, "total": 0}
+                "Front Row": {"engaged": 0, "off_task": 0, "context_dependent": 0, "decisive_total": 0, "total": 0},
+                "Middle Row": {"engaged": 0, "off_task": 0, "context_dependent": 0, "decisive_total": 0, "total": 0},
+                "Back Row": {"engaged": 0, "off_task": 0, "context_dependent": 0, "decisive_total": 0, "total": 0}
             }
             for d in new_detections:
                 cy = (d["y1"] + d["y2"]) / 2.0
-                is_on_task = d["color"] == (0, 255, 0)
+                det_state = d.get("state")
                 if cy < y_back_limit:
                     group = "Back Row"
                 elif cy < y_front_limit:
@@ -403,24 +492,51 @@ def run_inference(video_path=None, show_video=False):
                 else:
                     group = "Front Row"
                 group_counts[group]["total"] += 1
-                if is_on_task:
+                if det_state == STATE_ON_TASK:
                     group_counts[group]["engaged"] += 1
+                elif det_state == STATE_OFF_TASK:
+                    group_counts[group]["off_task"] += 1
+                elif det_state == STATE_CONTEXT:
+                    group_counts[group]["context_dependent"] += 1
+            for group in group_counts.values():
+                group["decisive_total"] = group["engaged"] + group["off_task"]
             for key in LATEST_GROUP_STATS:
                 LATEST_GROUP_STATS[key] = group_counts[key]
             LATEST_STATS["total"] = total_active
             LATEST_STATS["engaged"] = on_task_count
+            LATEST_STATS["off_task"] = off_task_count
+            LATEST_STATS["context_dependent"] = context_count
+            LATEST_STATS["decisive_total"] = decisive_total
             LATEST_STATS["active"] = total_active
             if infer_count % 5 == 0:
                 STATS_HISTORY.append({
                     "timestamp": time.time(),
                     "engaged": on_task_count, "total": total_active,
+                    "off_task": off_task_count,
+                    "context_dependent": context_count,
+                    "decisive_total": decisive_total,
+                    "listening": behavior_counts[0],
+                    "working": behavior_counts[1],
+                    "hand_raised": behavior_counts[2],
+                    "sleeping": behavior_counts[3],
+                    "away": behavior_counts[4],
                     "front_engaged": group_counts["Front Row"]["engaged"],
+                    "front_off_task": group_counts["Front Row"]["off_task"],
+                    "front_context": group_counts["Front Row"]["context_dependent"],
+                    "front_decisive_total": group_counts["Front Row"]["decisive_total"],
                     "front_total": group_counts["Front Row"]["total"],
                     "mid_engaged": group_counts["Middle Row"]["engaged"],
+                    "mid_off_task": group_counts["Middle Row"]["off_task"],
+                    "mid_context": group_counts["Middle Row"]["context_dependent"],
+                    "mid_decisive_total": group_counts["Middle Row"]["decisive_total"],
                     "mid_total": group_counts["Middle Row"]["total"],
                     "back_engaged": group_counts["Back Row"]["engaged"],
+                    "back_off_task": group_counts["Back Row"]["off_task"],
+                    "back_context": group_counts["Back Row"]["context_dependent"],
+                    "back_decisive_total": group_counts["Back Row"]["decisive_total"],
                     "back_total": group_counts["Back Row"]["total"]
                 })
+
 
     # Start background inference thread
     infer_thread = threading.Thread(target=inference_worker, daemon=True)
@@ -448,9 +564,9 @@ def run_inference(video_path=None, show_video=False):
 
         h, w = frame.shape[:2]
 
-        # 50% Vertical Crop (bottom half only)
+        # 50% Vertical Crop (top half only)
         mid_y = h // 2
-        frame = frame[mid_y:, :]
+        frame = frame[:mid_y, :]
         h, w = frame.shape[:2]
 
         # Resize to 960px width for display
@@ -499,50 +615,81 @@ def run_inference(video_path=None, show_video=False):
 
         # Draw overlays
         if VISUALIZE_GROUPS:
-            cv2.line(frame, (0, int(y_back_limit)), (w, int(y_back_limit)), (255, 255, 0), 2)
+            cv2.line(frame, (0, int(y_back_limit)), (w, int(y_back_limit)), (255, 0, 255), 2)
             cv2.line(frame, (0, int(y_front_limit)), (w, int(y_front_limit)), (255, 255, 0), 2)
             cv2.putText(frame, "BACK ROW", (10, int(y_back_limit) - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
             cv2.putText(frame, "MIDDLE ROW", (10, int(y_front_limit) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
             cv2.putText(frame, "FRONT ROW", (10, h - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+            
+            # ROI boundary visualization
+            rx1, ry1 = int(CLASS_ROI["x1"] * w), int(CLASS_ROI["y1"] * h)
+            rx2, ry2 = int(CLASS_ROI["x2"] * w), int(CLASS_ROI["y2"] * h)
+            cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(frame, "CLASS ROI", (rx1 + 5, ry1 + 20), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
 
-        # Legend
+        # Legend (Top Bar)
         overlay = frame.copy()
-        cv2.rectangle(overlay, (w - 260, 5), (w - 10, 50), (0, 0, 0), -1)
-        frame = cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
-        cv2.putText(frame, "Status: ", (w - 250, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        cv2.circle(frame, (w - 160, 25), 6, (0, 255, 0), -1)
-        cv2.putText(frame, "On-Task", (w - 145, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        cv2.circle(frame, (w - 50, 25), 6, (0, 0, 255), -1)
-        cv2.putText(frame, "Off-Task", (w - 35, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # Combined Legend (Compact)
+        cv2.rectangle(overlay, (0, 0), (w, 32), (20, 20, 20), -1) 
+        frame = cv2.addWeighted(overlay, 0.7, frame, 0.3, 0)
+        
+        # On-Task Indicator
+        cv2.circle(frame, (20, 16), 5, (0, 255, 0), -1)
+        cv2.putText(frame, "On-Task", (35, 21), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        if ENABLE_CONTEXT_STATE:
+            cv2.circle(frame, (120, 16), 5, (0, 215, 255), -1)
+            cv2.putText(frame, "Context", (135, 21),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.circle(frame, (220, 16), 5, (0, 0, 255), -1)
+            cv2.putText(frame, "Off-Task", (235, 21), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        else:
+            cv2.circle(frame, (120, 16), 5, (0, 0, 255), -1)
+            cv2.putText(frame, "Off-Task", (135, 21), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+
+        
+
 
         for det in last_detections:
+
             x1 = det["x1"]; y1 = det["y1"]
             x2 = det["x2"]; y2 = det["y2"]
             color = det["color"]
             text = det["text"]
+            state = det.get("state")
             cx = int((x1 + x2) / 2)
-            cy_head = y1 + 15
-
+            cy_body = (y1 + y2) / 2.0
+            
             if VISUALIZE_GROUPS:
-                box_cy = (y1 + y2) / 2.0
-                if box_cy < y_back_limit:
-                    color = (255, 100, 100)
-                elif box_cy < y_front_limit:
-                    color = (0, 255, 255)
+                if cy_body < y_back_limit:
+                    color = (255, 0, 255) # Magenta for Back Row
+                elif cy_body < y_front_limit:
+                    color = (255, 255, 0) # Cyan for Middle Row
                 else:
-                    color = (255, 0, 255)
+                    color = (0, 165, 255) # Orange for Front Row
+
+            cy_head = y1 + 15
+            label_y = max(y1 - 10, 20)
 
             if VISUAL_STYLE == "boxes":
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                if state == STATE_OFF_TASK and text:
+                    cv2.putText(frame, text, (x1, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             elif VISUAL_STYLE == "detailed":
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                cv2.putText(frame, text, (x1, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             else:
                 cv2.circle(frame, (cx, cy_head), 8, color, -1)
                 cv2.circle(frame, (cx, cy_head), 8, (0, 0, 0), 1)
+                if state == STATE_OFF_TASK and text:
+                    cv2.putText(frame, text, (x1, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 2)
 
         if show_video:
             cv2.imshow("Engagement Analysis", frame)

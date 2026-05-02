@@ -234,7 +234,8 @@ export default function StudentDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white">
+    <div className="bg-gray-900 text-white min-h-screen">
+
       <main className="max-w-7xl mx-auto p-8">
         {/* AI Learning Assistant - PRIORITY SECTION */}
         <section className="mb-8">

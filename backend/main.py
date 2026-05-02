@@ -212,8 +212,21 @@ def set_zone_settings(req: ZoneSettingsRequest):
     set_zone_boundaries(req.back_split, req.front_split)
     return {"status": "ok", "zones": {"back": req.back_split, "front": req.front_split}}
 
+class ClassBoundaryRequest(BaseModel):
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+@app.post("/settings/class-boundary")
+def set_class_boundary_endpoint(req: ClassBoundaryRequest):
+    from modules.engagement.run_inference import set_class_boundary
+    set_class_boundary(req.x1, req.y1, req.x2, req.y2)
+    return {"status": "ok", "boundary": {"x1": req.x1, "y1": req.y1, "x2": req.x2, "y2": req.y2}}
+
 
 @app.get("/video_feed")
+
 def video_feed():
     if run_inference is None:
         return StreamingResponse(iter([b""]), media_type="multipart/x-mixed-replace; boundary=frame")

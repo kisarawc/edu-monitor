@@ -159,15 +159,13 @@ async def upload_lecture_slides(file: UploadFile = File(...)):
         
         logger.info(f"Uploaded and stored {num_stored} chunks from {file.filename}")
         
-        sample_chunk = chunks[0] if chunks else ""
-        
         return StatusResponse(
             success=True,
             message=f"Successfully processed and stored {num_stored} content chunks",
             data={
                 "filename": file.filename,
                 "chunks_stored": num_stored,
-                "sample_chunk": sample_chunk[:200] + "..." if len(sample_chunk) > 200 else sample_chunk
+                "sample_chunk": chunks[0][:200] + "..." if chunks else None
             }
         )
 

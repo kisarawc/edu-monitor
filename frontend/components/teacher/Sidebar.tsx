@@ -2,6 +2,7 @@
 
 import React from "react";
 import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "@/context/AuthContext";
 import {
     BarChart3,
     BrainCircuit,
@@ -14,6 +15,7 @@ import {
 export default function Sidebar() {
     const router = useRouter();
     const pathname = usePathname();
+    const { user } = useAuth();
 
     const tabs = [
         { id: 'engagement', label: 'Student Engagement', icon: BrainCircuit, path: '/teacher/engagement' },
@@ -21,6 +23,8 @@ export default function Sidebar() {
         { id: 'attendance', label: 'Student Attendance', icon: UserCheck, path: '/teacher/attendance' },
         { id: 'student-perf', label: 'Student Performance', icon: GraduationCap, path: '/teacher/performance' },
     ];
+
+    const displayName = user?.teacher_profile?.full_name || user?.username || "Instructor";
 
     return (
         <div className="w-64 bg-gray-800 border-r border-gray-700 flex flex-col h-screen sticky top-0">
@@ -57,12 +61,22 @@ export default function Sidebar() {
 
             <div className="p-4 border-t border-gray-700">
                 <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400">
+                    <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center text-blue-400 overflow-hidden">
+                        {user?.id ? (
+                            <img
+                                src={`http://localhost:8000/api/auth/users/${user.id}/profile-picture`}
+                                alt={displayName}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                }}
+                            />
+                        ) : null}
                         <Users size={16} />
                     </div>
                     <div>
-                        <p className="text-sm font-medium text-white">Prof. Anderson</p>
-                        <p className="text-xs text-gray-500">Instructor</p>
+                        <p className="text-sm font-medium text-white truncate max-w-[150px]">{displayName}</p>
+                        <p className="text-xs text-gray-500 capitalize">{user?.role || "Instructor"}</p>
                     </div>
                 </div>
             </div>

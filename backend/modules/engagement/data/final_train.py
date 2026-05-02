@@ -5,12 +5,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
-
 from sklearn.ensemble import RandomForestClassifier
+import joblib
 
 # --- CONFIGURATION ---
-PUBLIC_CSV = "public_features.csv"
-LOCAL_CSV = "custom_classroom_features.csv"
+PUBLIC_CSV = r"C:\Users\chath\Desktop\Research\Dataset\public_features.csv"
+LOCAL_CSV = r"C:\Users\chath\Desktop\Research\Dataset\custom_classroom_features.csv"
+
 
 CLASS_NAMES = ["Listening", "Working", "Hand Raised", "Sleeping", "Turned Away"]
 
@@ -112,3 +113,13 @@ cm_filename = "confusion_matrix_final.png"
 plt.savefig(cm_filename, dpi=300)
 print(f"✅ Final confusion matrix successfully saved as '{cm_filename}'")
 plt.show()
+
+# --- 7. SAVE THE MODEL ---
+print("\n" + "="*50)
+print("SAVING MODEL")
+print("="*50)
+model_dir = os.path.join(os.path.dirname(__file__), "..", "models")
+os.makedirs(model_dir, exist_ok=True)
+model_path = os.path.join(model_dir, "classroom_behavior_model.pkl")
+joblib.dump(model, model_path)
+print(f"✅ Model successfully saved to '{model_path}'")
