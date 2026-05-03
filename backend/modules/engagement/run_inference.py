@@ -121,7 +121,7 @@ def run_inference(video_path=None, show_video=False):
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
     if video_path is None:
-        video_path = os.path.join(BASE_DIR, "data", "1.mp4")
+        video_path = os.path.join(BASE_DIR, "data", "2.mp4")
 
     print(f"Target Video Path: {video_path}", flush=True)
 
