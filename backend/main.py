@@ -51,7 +51,7 @@ from models.auth.seeder import seed_users
 
 # Import models so Base can see them
 import models.auth.models
-from modules.performance.models import LearningOutcome, Quiz, QuizQuestion, QuizResponse
+from modules.performance.models import LearningOutcome, Quiz, QuizQuestion, QuizResponse, AIFeedback, QuizEditLog
 
 # Create DB tables
 Base.metadata.create_all(bind=engine)

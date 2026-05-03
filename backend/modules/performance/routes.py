@@ -60,6 +60,7 @@ from .quiz_service import (
     update_quiz_questions,
     has_student_completed_quiz,
 )
+from .models import AIFeedback, QuizEditLog
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,17 @@ class SaveOutcomesRequest(BaseModel):
     """Request body for saving teacher-approved learning outcomes."""
     outcomes: List[str]
     source_filename: str
+
+
+class FeedbackRequest(BaseModel):
+    """Request body for submitting AI feedback (Human-in-the-Loop evaluation)."""
+    feature: str             # "qa" | "summary"
+    rating: int              # 1 = positive, 0 = negative
+    comment: Optional[str] = None
+    student_id: Optional[str] = None
+    question: Optional[str] = None
+    response: Optional[str] = None
+    summary_type: Optional[str] = None
 
 
 @router.get("/health")
@@ -661,7 +673,18 @@ async def regenerate_question_endpoint(request: Request, db: Session = Depends(g
         
         if not question_id:
             raise HTTPException(status_code=400, detail="question_id is required")
-            
+
+        # --- HITL: Log regeneration for evaluation tracking ---
+        from .models import QuizQuestion as QQ
+        q = db.query(QQ).filter(QQ.id == question_id).first()
+        if q:
+            log = QuizEditLog(quiz_id=q.quiz_id, question_id=question_id, action="regenerate", details="Teacher regenerated question via AI")
+            db.add(log)
+            try:
+                db.flush()
+            except Exception:
+                pass
+
         new_question = regenerate_quiz_question(question_id, db)
         return {"success": True, "question": new_question}
         
@@ -711,7 +734,18 @@ async def update_quiz_endpoint(quiz_id: str, request: Request, db: Session = Dep
     questions = data.get("questions", [])
     if not questions:
         raise HTTPException(status_code=400, detail="No questions provided to update")
-        
+
+    # --- HITL: Log edits for evaluation tracking ---
+    for q_data in questions:
+        q_id = q_data.get("id")
+        if q_id:
+            log = QuizEditLog(quiz_id=quiz_id, question_id=q_id, action="edit", details="Teacher edited question text/options")
+            db.add(log)
+    try:
+        db.flush()
+    except Exception:
+        pass  # Non-critical — don't fail the edit if logging fails
+
     updated_quiz = update_quiz_questions(quiz_id, questions, db)
     if not updated_quiz:
         raise HTTPException(status_code=404, detail="Quiz not found")
@@ -794,4 +828,180 @@ async def quiz_analytics(quiz_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# HUMAN-IN-THE-LOOP EVALUATION ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════
 
+@router.post("/feedback")
+async def submit_feedback(request: FeedbackRequest, db: Session = Depends(get_db)):
+    """
+    Submit student feedback on an AI-generated response.
+    Used for Human-in-the-Loop evaluation of the AI system.
+    """
+    if request.feature not in ("qa", "summary"):
+        raise HTTPException(status_code=400, detail="feature must be 'qa' or 'summary'")
+    if request.rating not in (0, 1):
+        raise HTTPException(status_code=400, detail="rating must be 0 (negative) or 1 (positive)")
+
+    feedback = AIFeedback(
+        feature=request.feature,
+        rating=request.rating,
+        comment=request.comment,
+        student_id=request.student_id,
+        question=request.question,
+        response=request.response[:2000] if request.response else None,  # cap stored text
+        summary_type=request.summary_type,
+    )
+    db.add(feedback)
+    db.commit()
+
+    logger.info(f"HITL feedback: {request.feature} {'👍' if request.rating else '👎'} from {request.student_id}")
+    return {"success": True, "message": "Feedback recorded", "id": feedback.id}
+
+
+@router.get("/feedback/analytics")
+async def feedback_analytics(db: Session = Depends(get_db)):
+    """
+    Get aggregated Human-in-the-Loop evaluation analytics.
+    Returns satisfaction rates, feedback counts, quiz edit stats, and trend data.
+    """
+    from sqlalchemy import func
+
+    # --- Q&A feedback ---
+    qa_all = db.query(AIFeedback).filter(AIFeedback.feature == "qa").all()
+    qa_positive = sum(1 for f in qa_all if f.rating == 1)
+    qa_total = len(qa_all)
+    qa_with_comments = sum(1 for f in qa_all if f.comment)
+
+    # --- Summary feedback ---
+    summary_all = db.query(AIFeedback).filter(AIFeedback.feature == "summary").all()
+    summary_helpful = sum(1 for f in summary_all if f.rating == 1)
+    summary_total = len(summary_all)
+
+    # Summary breakdown by type
+    summary_by_type = {}
+    for f in summary_all:
+        st = f.summary_type or "unknown"
+        if st not in summary_by_type:
+            summary_by_type[st] = {"helpful": 0, "total": 0}
+        summary_by_type[st]["total"] += 1
+        if f.rating == 1:
+            summary_by_type[st]["helpful"] += 1
+
+    # --- Quiz edit logs ---
+    edit_logs = db.query(QuizEditLog).all()
+    edits = sum(1 for l in edit_logs if l.action == "edit")
+    regenerations = sum(1 for l in edit_logs if l.action == "regenerate")
+    deletions = sum(1 for l in edit_logs if l.action == "delete")
+
+    # Total questions ever generated (across all quizzes)
+    from .models import Quiz as QuizModel
+    total_quizzes = db.query(QuizModel).count()
+    total_questions_generated = db.query(func.sum(QuizModel.num_questions)).scalar() or 0
+    total_modifications = edits + regenerations + deletions
+    edit_rate = round(total_modifications / total_questions_generated * 100, 1) if total_questions_generated > 0 else 0
+
+    # --- Trend data (daily feedback counts for charts) ---
+    all_feedback = db.query(AIFeedback).order_by(AIFeedback.created_at.asc()).all()
+    daily_trend = {}
+    for f in all_feedback:
+        day = f.created_at.strftime("%Y-%m-%d") if f.created_at else "unknown"
+        if day not in daily_trend:
+            daily_trend[day] = {"date": day, "qa_positive": 0, "qa_negative": 0, "summary_positive": 0, "summary_negative": 0}
+        if f.feature == "qa":
+            daily_trend[day]["qa_positive" if f.rating == 1 else "qa_negative"] += 1
+        else:
+            daily_trend[day]["summary_positive" if f.rating == 1 else "summary_negative"] += 1
+
+    # --- Rating distribution for radar chart ---
+    # Per-feature satisfaction for visual comparison
+    features_summary = []
+    if qa_total > 0:
+        features_summary.append({"feature": "Q&A Answers", "satisfaction": round(qa_positive / qa_total * 100, 1), "total": qa_total})
+    if summary_total > 0:
+        features_summary.append({"feature": "Summaries", "satisfaction": round(summary_helpful / summary_total * 100, 1), "total": summary_total})
+    if total_questions_generated > 0:
+        acceptance_rate = round((total_questions_generated - total_modifications) / total_questions_generated * 100, 1)
+        features_summary.append({"feature": "Quiz Questions", "satisfaction": acceptance_rate, "total": int(total_questions_generated)})
+
+    date_range = {}
+    if all_feedback:
+        date_range = {
+            "first": all_feedback[0].created_at.strftime("%Y-%m-%d") if all_feedback[0].created_at else None,
+            "last": all_feedback[-1].created_at.strftime("%Y-%m-%d") if all_feedback[-1].created_at else None,
+        }
+
+    return {
+        "success": True,
+        "analytics": {
+            "qa": {
+                "total": qa_total,
+                "positive": qa_positive,
+                "negative": qa_total - qa_positive,
+                "satisfaction_rate": round(qa_positive / qa_total * 100, 1) if qa_total > 0 else 0,
+                "with_comments": qa_with_comments,
+            },
+            "summary": {
+                "total": summary_total,
+                "helpful": summary_helpful,
+                "not_helpful": summary_total - summary_helpful,
+                "helpfulness_rate": round(summary_helpful / summary_total * 100, 1) if summary_total > 0 else 0,
+                "by_type": summary_by_type,
+            },
+            "quiz_edits": {
+                "total_quizzes": total_quizzes,
+                "total_questions_generated": int(total_questions_generated),
+                "questions_edited": edits,
+                "questions_regenerated": regenerations,
+                "questions_deleted": deletions,
+                "total_modifications": total_modifications,
+                "edit_rate": edit_rate,
+                "acceptance_rate": round(100 - edit_rate, 1),
+            },
+            "total_feedback": qa_total + summary_total,
+            "daily_trend": list(daily_trend.values()),
+            "features_summary": features_summary,
+            "date_range": date_range,
+        }
+    }
+
+
+@router.get("/feedback/recent")
+async def recent_feedback(limit: int = 20, db: Session = Depends(get_db)):
+    """
+    Get recent feedback entries with full context for the admin evaluation log.
+    """
+    # Recent AI feedback
+    feedbacks = db.query(AIFeedback).order_by(AIFeedback.created_at.desc()).limit(limit).all()
+
+    # Recent quiz edit logs
+    edit_logs = db.query(QuizEditLog).order_by(QuizEditLog.created_at.desc()).limit(limit).all()
+
+    # Merge and sort by timestamp
+    entries = []
+    for f in feedbacks:
+        entries.append({
+            "type": "feedback",
+            "feature": f.feature,
+            "rating": f.rating,
+            "comment": f.comment,
+            "student_id": f.student_id,
+            "question": f.question[:100] if f.question else None,
+            "response": f.response[:150] if f.response else None,
+            "summary_type": f.summary_type,
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+        })
+    for l in edit_logs:
+        entries.append({
+            "type": "quiz_edit",
+            "action": l.action,
+            "quiz_id": l.quiz_id,
+            "question_id": l.question_id,
+            "details": l.details,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        })
+
+    # Sort merged list by created_at descending
+    entries.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+    return {"success": True, "count": len(entries), "entries": entries[:limit]}

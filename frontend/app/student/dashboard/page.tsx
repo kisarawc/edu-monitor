@@ -22,7 +22,10 @@ import {
   Brain,
   Bell,
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  ThumbsUp,
+  ThumbsDown,
+  MessageSquare
 } from 'lucide-react';
 import { useQuiz } from "@/context/QuizContext";
 
@@ -54,6 +57,8 @@ const MarkdownContent = ({ children }: { children: string }) => (
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  feedbackGiven?: 'positive' | 'negative' | null;
+  userQuestion?: string; // stores the preceding user question for context
 }
 
 export default function StudentDashboard() {
@@ -74,6 +79,13 @@ export default function StudentDashboard() {
   const askAbortRef = useRef<AbortController | null>(null);
   const [splitPercent, setSplitPercent] = useState(60);
   const isDraggingRef = useRef(false);
+
+  // --- HITL Feedback State ---
+  const [feedbackCommentIdx, setFeedbackCommentIdx] = useState<number | null>(null);
+  const [feedbackComment, setFeedbackComment] = useState('');
+  const [summaryFeedback, setSummaryFeedback] = useState<'positive' | 'negative' | null>(null);
+  const [summaryFeedbackComment, setSummaryFeedbackComment] = useState('');
+  const [showSummaryComment, setShowSummaryComment] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Drag handler for the split divider
@@ -203,6 +215,85 @@ export default function StudentDashboard() {
     summaryAbortRef.current?.abort();
   };
 
+  // --- HITL: Submit feedback to backend ---
+  const submitFeedback = async (feature: 'qa' | 'summary', rating: number, opts?: { comment?: string; question?: string; response?: string; summaryType?: string }) => {
+    try {
+      await fetch(`${API_BASE_URL}/api/performance/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feature,
+          rating,
+          comment: opts?.comment || null,
+          student_id: studentId,
+          question: opts?.question || null,
+          response: opts?.response || null,
+          summary_type: opts?.summaryType || null,
+        }),
+      });
+    } catch (e) {
+      console.error('Feedback submission failed:', e);
+    }
+  };
+
+  const handleQAFeedback = (msgIdx: number, rating: 'positive' | 'negative') => {
+    const msg = messages[msgIdx];
+    // Find the preceding user message as context
+    let userQuestion = '';
+    for (let i = msgIdx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userQuestion = messages[i].content;
+        break;
+      }
+    }
+    // Mark feedback in state
+    setMessages(prev => {
+      const updated = [...prev];
+      updated[msgIdx] = { ...updated[msgIdx], feedbackGiven: rating };
+      return updated;
+    });
+    submitFeedback('qa', rating === 'positive' ? 1 : 0, {
+      question: userQuestion,
+      response: msg.content,
+    });
+  };
+
+  const handleQAFeedbackWithComment = (msgIdx: number) => {
+    const msg = messages[msgIdx];
+    let userQuestion = '';
+    for (let i = msgIdx - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userQuestion = messages[i].content;
+        break;
+      }
+    }
+    submitFeedback('qa', msg.feedbackGiven === 'positive' ? 1 : 0, {
+      question: userQuestion,
+      response: msg.content,
+      comment: feedbackComment,
+    });
+    setFeedbackCommentIdx(null);
+    setFeedbackComment('');
+  };
+
+  const handleSummaryFeedback = (rating: 'positive' | 'negative') => {
+    setSummaryFeedback(rating);
+    submitFeedback('summary', rating === 'positive' ? 1 : 0, {
+      response: summary,
+      summaryType: summaryType,
+    });
+  };
+
+  const handleSummaryFeedbackComment = () => {
+    submitFeedback('summary', summaryFeedback === 'positive' ? 1 : 0, {
+      response: summary,
+      summaryType: summaryType,
+      comment: summaryFeedbackComment,
+    });
+    setShowSummaryComment(false);
+    setSummaryFeedbackComment('');
+  };
+
   const askQuestion = async () => {
     if (!inputMessage.trim() || isAskLoading) return;
 
@@ -210,7 +301,7 @@ export default function StudentDashboard() {
     setInputMessage('');
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsAskLoading(true);
-    setMessages(prev => [...prev, { role: 'assistant', content: '' }]);
+    setMessages(prev => [...prev, { role: 'assistant', content: '', feedbackGiven: null, userQuestion: userMessage }]);
 
     const abortController = new AbortController();
     askAbortRef.current = abortController;
@@ -264,7 +355,7 @@ export default function StudentDashboard() {
                 setMessages(prev => {
                   const newMessages = [...prev];
                   newMessages[newMessages.length - 1] = {
-                    role: 'assistant',
+                    ...newMessages[newMessages.length - 1],
                     content: newMessages[newMessages.length - 1].content + parsed.text
                   };
                   return newMessages;
@@ -364,7 +455,41 @@ export default function StudentDashboard() {
                     </div>
                     <div className="p-4 flex-1 overflow-y-auto">
                       {summary ? (
-                        <div className="text-gray-300 leading-relaxed"><MarkdownContent>{summary}</MarkdownContent></div>
+                        <div>
+                          <div className="text-gray-300 leading-relaxed"><MarkdownContent>{summary}</MarkdownContent></div>
+                          {/* HITL: Summary Feedback Widget */}
+                          {!isSummaryLoading && (
+                            <div className="mt-4 pt-3 border-t border-gray-700">
+                              {summaryFeedback === null ? (
+                                <div className="flex items-center gap-3">
+                                  <span className="text-xs text-gray-500">Did this summary help you understand the lecture?</span>
+                                  <button onClick={() => handleSummaryFeedback('positive')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors text-xs font-medium border border-emerald-500/20">
+                                    <ThumbsUp size={13} /> Yes, helpful
+                                  </button>
+                                  <button onClick={() => handleSummaryFeedback('negative')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors text-xs font-medium border border-red-500/20">
+                                    <ThumbsDown size={13} /> Not really
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2 text-xs">
+                                    <CheckCircle2 size={14} className="text-emerald-400" />
+                                    <span className="text-emerald-400">Thanks for your feedback!</span>
+                                    {!showSummaryComment && (
+                                      <button onClick={() => setShowSummaryComment(true)} className="text-gray-500 hover:text-gray-300 underline ml-1">Add a comment</button>
+                                    )}
+                                  </div>
+                                  {showSummaryComment && (
+                                    <div className="flex gap-2">
+                                      <input type="text" value={summaryFeedbackComment} onChange={e => setSummaryFeedbackComment(e.target.value)} placeholder="How can we improve this summary?" className="flex-1 px-3 py-1.5 rounded-lg bg-gray-700 border border-gray-600 text-white text-xs placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-purple-500" onKeyDown={e => e.key === 'Enter' && handleSummaryFeedbackComment()} />
+                                      <button onClick={handleSummaryFeedbackComment} className="px-3 py-1.5 bg-purple-600 text-white rounded-lg text-xs hover:bg-purple-700">Send</button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <div className="h-full flex flex-col items-center justify-center text-gray-500">
                           <BookOpen size={48} className="mb-4 opacity-30" />
@@ -404,20 +529,55 @@ export default function StudentDashboard() {
                         </div>
                       ) : (
                         messages.map((msg, idx) => (
-                          <div key={idx} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                            {msg.role === 'assistant' && (
-                              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0">
-                                <Bot size={16} className="text-white" />
+                          <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                            <div className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                              {msg.role === 'assistant' && (
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-r from-purple-500 to-blue-500 flex items-center justify-center flex-shrink-0">
+                                  <Bot size={16} className="text-white" />
+                                </div>
+                              )}
+                              <div className={`max-w-[80%] rounded-2xl px-4 py-2 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-200'}`}>
+                                <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                                  {msg.content ? <MarkdownContent>{msg.content}</MarkdownContent> : <Loader2 size={16} className="animate-spin" />}
+                                </div>
                               </div>
-                            )}
-                            <div className={`max-w-[80%] rounded-2xl px-4 py-2 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-200'}`}>
-                              <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                                {msg.content ? <MarkdownContent>{msg.content}</MarkdownContent> : <Loader2 size={16} className="animate-spin" />}
-                              </div>
+                              {msg.role === 'user' && (
+                                <div className="w-8 h-8 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 flex items-center justify-center flex-shrink-0">
+                                  <User size={16} className="text-white" />
+                                </div>
+                              )}
                             </div>
-                            {msg.role === 'user' && (
-                              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 flex items-center justify-center flex-shrink-0">
-                                <User size={16} className="text-white" />
+                            {/* HITL: Q&A Feedback Widget */}
+                            {msg.role === 'assistant' && msg.content && !isAskLoading && (
+                              <div className="ml-11 mt-1">
+                                {msg.feedbackGiven === null || msg.feedbackGiven === undefined ? (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] text-gray-600">Helpful?</span>
+                                    <button onClick={() => handleQAFeedback(idx, 'positive')} className="p-1 rounded hover:bg-emerald-500/20 text-gray-500 hover:text-emerald-400 transition-colors" title="Yes, helpful">
+                                      <ThumbsUp size={12} />
+                                    </button>
+                                    <button onClick={() => handleQAFeedback(idx, 'negative')} className="p-1 rounded hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-colors" title="Not helpful">
+                                      <ThumbsDown size={12} />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2">
+                                    <span className={`text-[10px] flex items-center gap-1 ${msg.feedbackGiven === 'positive' ? 'text-emerald-500' : 'text-red-400'}`}>
+                                      {msg.feedbackGiven === 'positive' ? <ThumbsUp size={10} /> : <ThumbsDown size={10} />}
+                                      {msg.feedbackGiven === 'positive' ? 'Helpful' : 'Not helpful'}
+                                    </span>
+                                    {feedbackCommentIdx !== idx && (
+                                      <button onClick={() => setFeedbackCommentIdx(idx)} className="text-[10px] text-gray-600 hover:text-gray-400 underline">Add comment</button>
+                                    )}
+                                  </div>
+                                )}
+                                {feedbackCommentIdx === idx && (
+                                  <div className="flex gap-1.5 mt-1">
+                                    <input type="text" value={feedbackComment} onChange={e => setFeedbackComment(e.target.value)} placeholder="How can we improve?" className="flex-1 px-2 py-1 rounded bg-gray-700 border border-gray-600 text-white text-[10px] placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500" onKeyDown={e => e.key === 'Enter' && handleQAFeedbackWithComment(idx)} />
+                                    <button onClick={() => handleQAFeedbackWithComment(idx)} className="px-2 py-1 bg-blue-600 text-white rounded text-[10px] hover:bg-blue-700">Send</button>
+                                    <button onClick={() => { setFeedbackCommentIdx(null); setFeedbackComment(''); }} className="px-2 py-1 text-gray-500 text-[10px] hover:text-gray-300">✕</button>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
