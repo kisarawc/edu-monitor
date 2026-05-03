@@ -51,7 +51,7 @@ from models.auth.seeder import seed_users
 
 # Import models so Base can see them
 import models.auth.models
-from modules.performance.models import LearningOutcome, Quiz, QuizQuestion, QuizResponse
+from modules.performance.models import LearningOutcome, Quiz, QuizQuestion, QuizResponse, AIFeedback, QuizEditLog
 
 # Create DB tables
 Base.metadata.create_all(bind=engine)
@@ -103,6 +103,32 @@ async def startup_event():
         logger.error(f"⚠️  Database seeding failed: {e}")
     finally:
         db.close()
+
+    # Pre-load Whisper model in background thread (delayed so other components load first)
+    import threading
+    import time as _time
+    def _preload_whisper():
+        try:
+            _time.sleep(15)  # Wait for server + frontend to fully initialize
+            logger.info("⏳ Starting delayed Whisper model pre-load...")
+
+            # Ensure .env vars (WHISPER_FORCE_CPU etc.) are loaded in this thread
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+            except ImportError:
+                pass
+
+            # When force-CPU is requested, hide CUDA *before* importing whisper_stt
+            # so neither PyTorch nor CTranslate2 ever initialise the CUDA runtime
+            if os.environ.get("WHISPER_FORCE_CPU", "0").strip() == "1":
+                os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+            from modules.performance.whisper_stt import preload_model
+            preload_model()
+        except Exception as e:
+            logger.warning(f"⚠️  Whisper pre-load failed (will retry on first request): {e}")
+    threading.Thread(target=_preload_whisper, daemon=True).start()
 
 
 @app.on_event("shutdown")

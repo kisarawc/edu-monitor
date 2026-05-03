@@ -5,7 +5,9 @@ import { useState, useRef, useCallback, useEffect } from "react";
 const API_BASE_URL = "http://localhost:8000";
 
 // How often to send audio chunks for transcription (ms)
-const CHUNK_INTERVAL = 4000;
+// 10s balances accuracy (Whisper needs ≥5s for coherent sentences) vs perceived
+// latency — the user sees text ~12s after speaking instead of ~17s.
+const CHUNK_INTERVAL = 10000;
 
 // Typewriter animation speed (ms per character)
 const TYPEWRITER_SPEED = 20;
@@ -191,12 +193,12 @@ export function useLocalSTT(
                     mediaRecorderRef.current.stop();
                 }
 
-                // Start new segment immediately
+                // Start new segment immediately (minimal gap)
                 setTimeout(() => {
                     if (isRecordingRef.current) {
                         startNewRecorderSegment();
                     }
-                }, 50);
+                }, 10);
             }, CHUNK_INTERVAL);
         } catch (err: any) {
             console.error("Failed to start recording:", err);
@@ -224,9 +226,9 @@ export function useLocalSTT(
             intervalRef.current = null;
         }
 
-        // Stop current recorder — onstop will fire but will discard the chunk
+        // Stop current recorder — send the final chunk
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-            mediaRecorderRef.current.stop();
+            mediaRecorderRef.current.stop(); // Will trigger onstop → send last chunk
         }
         mediaRecorderRef.current = null;
 
@@ -235,6 +237,10 @@ export function useLocalSTT(
             mediaStreamRef.current.getTracks().forEach((track) => track.stop());
             mediaStreamRef.current = null;
         }
+
+        // Flush any remaining buffered transcript on the backend
+        fetch(`${API_BASE_URL}/api/performance/transcribe-audio/flush`, { method: "POST" })
+            .catch(() => {}); // Best-effort, don't block
     }, []);
 
     const clear = useCallback(() => {

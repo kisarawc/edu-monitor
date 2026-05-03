@@ -3,8 +3,9 @@
 import { useAuth, UserRole } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { CheckCircle, XCircle, User, ShieldCheck } from "lucide-react";
+import { CheckCircle, XCircle, User, ShieldCheck, Brain } from "lucide-react";
 import RoleGuard from "@/components/RoleGuard";
+import Link from "next/link";
 
 interface PendingUser {
     id: number;
@@ -184,6 +185,15 @@ export default function AdminDashboard() {
                                     </div>
                                 </div>
                             </div>
+                            <Link href="/admin/dashboard/evaluation" className="block bg-gradient-to-r from-purple-600/20 to-blue-600/20 border border-purple-500/30 rounded-2xl p-6 hover:border-purple-500/50 transition-colors group">
+                                <div className="flex items-center gap-3 mb-3">
+                                    <div className="p-2.5 bg-gradient-to-r from-purple-500 to-blue-500 rounded-xl">
+                                        <Brain className="w-5 h-5 text-white" />
+                                    </div>
+                                    <h3 className="text-lg font-semibold group-hover:text-purple-300 transition-colors">LLM Evaluation</h3>
+                                </div>
+                                <p className="text-sm text-slate-400">View Human-in-the-Loop evaluation metrics, user feedback analytics, and AI system performance data.</p>
+                            </Link>
                         </div>
                     </div>
                 </div>
