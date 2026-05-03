@@ -33,3 +33,7 @@ backend/modules/performance/data
 
 # Deep Re-ID cloned library (not project source code)
 backend/deep-person-reid/
+
+# Ignored Folders
+Document Related/
+Website/
