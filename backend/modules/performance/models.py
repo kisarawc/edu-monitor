@@ -56,3 +56,39 @@ class QuizResponse(Base):
     answers = Column(JSON, nullable=False)  # Dictionary pairing question id to selected option index
 
     quiz = relationship("Quiz", back_populates="responses")
+
+
+class AIFeedback(Base):
+    """
+    Stores per-interaction feedback from students on AI-generated content.
+    Used for Human-in-the-Loop evaluation of the AI system.
+    """
+    __tablename__ = "ai_feedback"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    feature = Column(String, nullable=False)          # "qa" | "summary"
+    rating = Column(Integer, nullable=False)           # 1 = positive, 0 = negative
+    comment = Column(String, nullable=True)            # optional free-text feedback
+    student_id = Column(String, nullable=True)         # who gave feedback
+
+    # Context fields — what was rated
+    question = Column(String, nullable=True)           # the student's question (for qa)
+    response = Column(String, nullable=True)           # the AI response that was rated
+    summary_type = Column(String, nullable=True)       # "quick" | "advanced" (for summary)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(pytz.UTC))
+
+
+class QuizEditLog(Base):
+    """
+    Tracks teacher edits to AI-generated quizzes.
+    A low edit rate indicates the AI produces high-quality, publication-ready content.
+    """
+    __tablename__ = "quiz_edit_logs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    quiz_id = Column(String, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False)
+    question_id = Column(Integer, nullable=True)       # specific question edited (null for quiz-level actions)
+    action = Column(String, nullable=False)            # "edit" | "regenerate" | "delete"
+    details = Column(String, nullable=True)            # optional context (e.g. what was changed)
+    created_at = Column(DateTime, default=lambda: datetime.now(pytz.UTC))
