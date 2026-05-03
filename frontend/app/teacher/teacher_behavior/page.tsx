@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Activity, Move, Compass } from 'lucide-react';
 
-type Stats = { behavior: string; mobility: number; orientation: number; hand_speed?: number; camera_source?: string };
+type Stats = { behavior: string; mobility: number; orientation: number; hand_speed?: number; camera_source?: string; boundary_y?: number | null; fine_label?: string };
 type Sample = { ts: number; behavior: string; mobility: number; orientation: number; hand_speed?: number; camera_source?: string };
 export default function TeacherBehaviorPage() {
     const [stats, setStats] = useState<Stats>({ behavior: 'Initializing...', mobility: 0, orientation: 0 });
@@ -74,16 +74,18 @@ export default function TeacherBehaviorPage() {
     // Distribution over session (or live if no session data)
     const distribution = useMemo(() => {
         const source = sessionBuffer.length ? sessionBuffer : liveWindow;
-        const counts: Record<string, number> = { PASSIVE: 0, LECTURING: 0, INTERACTIVE: 0 };
+        const counts: Record<string, number> = { PASSIVE: 0, LECTURING: 0, INTERACTIVE: 0, NOT_DETECTED: 0 };
         source.forEach(s => {
-            const b = s.behavior === 'INTERACTIVE' ? 'INTERACTIVE' : s.behavior === 'LECTURING' ? 'LECTURING' : 'PASSIVE';
-            counts[b] += 1;
+            if (s.behavior === 'INTERACTIVE') counts['INTERACTIVE'] += 1;
+            else if (s.behavior === 'LECTURING') counts['LECTURING'] += 1;
+            else if (s.behavior === 'PASSIVE') counts['PASSIVE'] += 1;
+            else counts['NOT_DETECTED'] += 1;
         });
-        const total = source.length || 1;
+        const total_detected = (source.length - counts['NOT_DETECTED']) || 1;
         return {
-            passive: Math.round((counts['PASSIVE'] / total) * 100),
-            lecturing: Math.round((counts['LECTURING'] / total) * 100),
-            interactive: Math.round((counts['INTERACTIVE'] / total) * 100),
+            passive: Math.round((counts['PASSIVE'] / total_detected) * 100),
+            lecturing: Math.round((counts['LECTURING'] / total_detected) * 100),
+            interactive: Math.round((counts['INTERACTIVE'] / total_detected) * 100),
             counts,
         };
     }, [sessionBuffer, liveWindow]);
@@ -107,10 +109,12 @@ export default function TeacherBehaviorPage() {
     );
 
     const TimelineStrip = ({ samples }: { samples: Sample[] }) => {
-        const counts: Record<string, number> = { PASSIVE: 0, LECTURING: 0, INTERACTIVE: 0 };
+        const counts: Record<string, number> = { PASSIVE: 0, LECTURING: 0, INTERACTIVE: 0, NOT_DETECTED: 0 };
         samples.forEach(s => {
-            const b = s.behavior === 'INTERACTIVE' ? 'INTERACTIVE' : s.behavior === 'LECTURING' ? 'LECTURING' : 'PASSIVE';
-            counts[b] += 1;
+            if (s.behavior === 'INTERACTIVE') counts['INTERACTIVE'] += 1;
+            else if (s.behavior === 'LECTURING') counts['LECTURING'] += 1;
+            else if (s.behavior === 'PASSIVE') counts['PASSIVE'] += 1;
+            else counts['NOT_DETECTED'] += 1;
         });
         const total = samples.length || 1;
         return (
@@ -204,16 +208,18 @@ export default function TeacherBehaviorPage() {
         const durationMs = (endTs - (sessionStart ?? endTs));
         const durationSec = Math.round(durationMs / 1000);
 
-        const counts: Record<string, number> = { PASSIVE: 0, LECTURING: 0, INTERACTIVE: 0 };
+        const counts: Record<string, number> = { PASSIVE: 0, LECTURING: 0, INTERACTIVE: 0, NOT_DETECTED: 0 };
         snapshot.forEach(s => {
-            const b = s.behavior === 'INTERACTIVE' ? 'INTERACTIVE' : s.behavior === 'LECTURING' ? 'LECTURING' : 'PASSIVE';
-            counts[b] += 1;
+            if (s.behavior === 'INTERACTIVE') counts['INTERACTIVE'] += 1;
+            else if (s.behavior === 'LECTURING') counts['LECTURING'] += 1;
+            else if (s.behavior === 'PASSIVE') counts['PASSIVE'] += 1;
+            else counts['NOT_DETECTED'] += 1;
         });
-        const total = snapshot.length || 1;
+        const total_detected = (snapshot.length - counts['NOT_DETECTED']) || 1;
         const distributionPct = {
-            passive: Math.round((counts['PASSIVE'] / total) * 100),
-            lecturing: Math.round((counts['LECTURING'] / total) * 100),
-            interactive: Math.round((counts['INTERACTIVE'] / total) * 100),
+            passive: Math.round((counts['PASSIVE'] / total_detected) * 100),
+            lecturing: Math.round((counts['LECTURING'] / total_detected) * 100),
+            interactive: Math.round((counts['INTERACTIVE'] / total_detected) * 100),
         };
         const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Unknown';
 
@@ -224,9 +230,9 @@ export default function TeacherBehaviorPage() {
             prev = s.behavior;
         }
 
-        const avgMobility = snapshot.reduce((a, b) => a + b.mobility, 0) / total;
-        const avgOrientation = snapshot.reduce((a, b) => a + b.orientation, 0) / total;
-        const avgHandSpeed = snapshot.reduce((a, b) => a + (b.hand_speed ?? 0), 0) / total;
+        const avgMobility = snapshot.reduce((a, b) => a + b.mobility, 0) / total_detected;
+        const avgOrientation = snapshot.reduce((a, b) => a + b.orientation, 0) / total_detected;
+        const avgHandSpeed = snapshot.reduce((a, b) => a + (b.hand_speed ?? 0), 0) / total_detected;
 
         const metrics = {
             startISO: new Date(sessionStart ?? endTs).toISOString(),
@@ -282,31 +288,36 @@ export default function TeacherBehaviorPage() {
 
             <main className="flex-1 flex flex-col overflow-hidden min-h-0">
                 <div className="p-6">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
                             <div className="flex items-center gap-2 mb-1">
                                 <Activity size={18} className="text-blue-500" />
                                 <h3 className="text-gray-400 text-sm font-medium">Current State</h3>
+                                <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse ml-auto"></span>
                             </div>
                             <div className={`text-2xl font-bold ${getBehaviorColor(stats.behavior)}`}>
                                 {stats.behavior}
                             </div>
-                            <div className="text-xs text-gray-400 mt-2">Session: {sessionStart ? formatDuration(sessionStart, isRecording ? null : sessionEnd) : 'not recording'}</div>
+                            <div className="text-xs text-gray-400 mt-2 flex items-center gap-2">
+                                Session: {sessionStart ? formatDuration(sessionStart, isRecording ? null : sessionEnd) : 'not recording'}
+                                {isRecording && (
+                                    <span className="inline-flex items-center gap-1">
+                                        <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                                        <span className="text-red-400 text-xs font-semibold">REC</span>
+                                    </span>
+                                )}
+                            </div>
                             <div className="text-xs text-gray-400">Samples: {sessionBuffer.length}</div>
                         </div>
                         <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
-                            <div className="flex items-center gap-2 mb-1">
-                                <Move size={18} className="text-purple-500" />
-                                <h3 className="text-gray-400 text-sm font-medium">Mobility Score</h3>
+                            <div className="flex items-center gap-2 mb-1 group relative">
+                                <Activity size={18} className="text-purple-500" />
+                                <h3 className="text-gray-400 text-sm font-medium">Specific Action</h3>
+                                <span className="absolute left-0 top-7 hidden group-hover:block bg-gray-700 text-xs p-2 rounded shadow-lg w-52 z-10 text-gray-200">
+                                    The fine-grained gesture detected by the model
+                                </span>
                             </div>
-                            <div className="text-2xl font-bold">{stats.mobility}</div>
-                        </div>
-                        <div className="bg-gray-800 p-4 rounded-xl border border-gray-700">
-                            <div className="flex items-center gap-2 mb-1">
-                                <Compass size={18} className="text-yellow-500" />
-                                <h3 className="text-gray-400 text-sm font-medium">Orientation Var.</h3>
-                            </div>
-                            <div className="text-2xl font-bold">{stats.orientation}</div>
+                            <div className="text-2xl font-bold">{stats.fine_label || 'Unknown'}</div>
                         </div>
                     </div>
                 </div>
@@ -316,9 +327,9 @@ export default function TeacherBehaviorPage() {
                         <div className="w-full flex-1 bg-black flex items-center justify-center rounded-lg overflow-hidden relative">
                             <img src="http://localhost:8000/teacher_feed" alt="Feed" className="w-auto h-full object-contain" />
                             {/* Camera source badge */}
-                            <div className={`absolute top-3 left-3 px-3 py-1 rounded-full text-xs font-bold shadow-lg ${stats.camera_source === 'CAM2'
-                                ? 'bg-emerald-500/80 text-white border border-emerald-400'
-                                : 'bg-blue-500/80 text-white border border-blue-400'
+                            <div className={`absolute top-3 left-3 px-4 py-2 rounded-full text-sm font-bold shadow-2xl backdrop-blur-sm ${stats.camera_source === 'CAM2'
+                                ? 'bg-emerald-500/90 text-white border border-emerald-400'
+                                : 'bg-blue-500/90 text-white border border-blue-400'
                                 }`}>
                                 🎥 {stats.camera_source === 'CAM2' ? 'CAM 2 — BACK/AISLE' : 'CAM 1 — FRONT'}
                             </div>
@@ -329,7 +340,7 @@ export default function TeacherBehaviorPage() {
                             <div className="flex justify-between items-center mb-2">
                                 <label className="text-sm font-medium text-gray-300">Teacher Boundary Line</label>
                                 <span className="text-xs px-2 py-1 bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/30">
-                                    y={stats.mobility !== undefined && stats.behavior !== 'Initializing...' ? stats.mobility : '???'}
+                                    y={stats.boundary_y != null ? stats.boundary_y : '—'}
                                 </span>
                             </div>
                             <input
@@ -402,7 +413,13 @@ export default function TeacherBehaviorPage() {
                         ) : (
                             <div className="flex flex-col gap-4">
                                 <DistributionCard passive={distribution.passive} lecturing={distribution.lecturing} interactive={distribution.interactive} />
-                                <TimelineStrip samples={liveWindow} />
+                                {liveWindow.length > 0 ? (
+                                    <TimelineStrip samples={liveWindow} />
+                                ) : (
+                                    <div className="bg-gray-800 p-4 rounded-xl border border-gray-700 text-center">
+                                        <p className="text-gray-500 text-sm">Start recording to see behavior timeline</p>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

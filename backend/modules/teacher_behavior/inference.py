@@ -101,6 +101,7 @@ current_stats = {
     "mobility":      0.0,
     "orientation":   0.0,
     "camera_source": "CAM1",
+    "boundary_y":    None,
 }
 
 
@@ -584,9 +585,10 @@ def run_teacher_inference():
 
         # Immediately clear stale status when teacher is not in frame
         if not teacher_found:
-            current_stats["behavior"] = "NOT DETECTED"
+            current_stats["behavior"]   = "NOT DETECTED"
+            current_stats["fine_label"] = "Unknown"
 
-        if len(buf_hand_speed) == 30 and rf_model is not None:
+        if teacher_found and len(buf_hand_speed) == 30 and rf_model is not None:
             speeds  = list(buf_hand_speed)
             exts    = list(buf_arm_ext)
             sw_vals = [s for s in buf_shoulder_w if s > 0]
@@ -615,6 +617,7 @@ def run_teacher_inference():
             current_stats["hand_speed"]  = float(live_df["Mean_Hand_Speed"].iloc[0])
             current_stats["mobility"]    = float(live_df["Distance_From_Boundary"].iloc[0])
             current_stats["orientation"] = float(live_df["Mean_Shoulder_Width"].iloc[0])
+            current_stats["boundary_y"]  = boundary_y
 
             color = COARSE_COLORS.get(coarse, (255, 255, 255))
             cv2.putText(frame, f"{coarse}  [{fine_label}]", (10, 50),
